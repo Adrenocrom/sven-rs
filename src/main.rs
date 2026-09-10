@@ -11,7 +11,6 @@ trait Tool {
     fn execute(&self, params: Value) -> Result<String, Box<dyn Error>>;
 }
 
-
 macro_rules! define_tool {
     (
         $tool:ident, $params:ident, $name:literal, $desc:literal,
@@ -58,52 +57,36 @@ define_tool!(WriteTool, WriteToolParams, "write_tool", "writes content to a file
     }
 );
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReadToolParams {
-    path: String,
-    offset: Option<u32>,
-    take: Option<u32>
-}
-
-struct ReadTool;
-impl Tool for ReadTool {
-    fn name(&self) -> String { String::from("read_tool") }
-    fn description(&self) -> String { String::from("read text from a file") }
-    fn params(&self) -> Option<Value> {
-        Some(json!(schema_for!(ReadToolParams)))
+define_tool!(ReadTool, ReadToolParams, "read_tool", "reads content from file", 
+    params {
+        path: String,
+        offset: Option<u32>,
+        limit: Option<u32>
+    },
+    execute(args) { 
+        if let  Some(offset) = args.offset {
+            println!("offset; {}", offset);
+        }
+        if let  Some(limit) = args.limit {
+            println!("limit; {}", limit);
+        }
+        Ok(format!("reading content from: {}",  args.path)) 
     }
+);
 
-    fn execute(&self, params: Value) -> Result<String, Box<dyn Error>> {
-        let args : ReadToolParams =  serde_json::from_value(params)?;
-        Ok(args.path)
+define_tool!(ManTool, ManToolParams, "man_tool", "display man pages", 
+    params {
+        man_page: String,
+    },
+    execute(args) { 
+        Ok(format!("displaying man page: {}",  args.man_page)) 
     }
-
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ManToolParams {
-    name: String,
-}
-
-struct ManTool;
-impl Tool for ManTool {
-    fn name(&self) -> String { String::from("man_tool") }
-    fn description(&self) -> String { String::from("calls man") }
-    fn params(&self) -> Option<Value> {
-        Some(json!(schema_for!(ManToolParams)))
-    }
-
-    fn execute(&self, params: Value) -> Result<String, Box<dyn Error>> {
-        let args : ManToolParams =  serde_json::from_value(params)?;
-        Ok(args.name)
-    }
-
-}
+);
 
 fn main() {
     let tools = tools![ReadTool, WriteTool, ManTool];
     
-    let r_t = match tools.get("write_tool") {
+    let r_t = match tools.get("read_tool") {
         Some(t) => t,
         None => return
     };
