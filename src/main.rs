@@ -50,10 +50,13 @@ macro_rules! tools {
 }
 
 define_tool!(WriteTool, WriteToolParams, "write_tool", "writes content to a file",
-    params { path: String },
+    params { 
+        path: String,
+        content: String
+    },
     execute(args) { 
-        let result = format!("written to: {}",  args.path).to_string();
-        Ok(result) 
+        std::fs::write(&args.path, &args.content)?;   // ? converts io::Error → Box<dyn Error>
+        Ok(format!("written to: {}", args.path))
     }
 );
 
@@ -86,12 +89,12 @@ define_tool!(ManTool, ManToolParams, "man_tool", "display man pages",
 fn main() {
     let tools = tools![ReadTool, WriteTool, ManTool];
     
-    let r_t = match tools.get("read_tool") {
+    let r_t = match tools.get("write_tool") {
         Some(t) => t,
         None => return
     };
 
-    let result = match r_t.execute(json!({"path":"example.txt"})) {
+    let result = match r_t.execute(json!({"path":"example.txt", "content": "Hello World"})) {
         Ok(res) => res,
         Err(e) => e.to_string()
     };
