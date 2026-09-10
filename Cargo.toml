@@ -8,5 +8,6 @@ paste = "1.0.15"
 schemars = "1.2.2"
 serde = "1.0.229"
 serde_json = "1.0.151"
+thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 tools-rs = "0.3.3"
