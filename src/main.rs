@@ -1,148 +1,73 @@
-use std::{collections::HashMap, error::Error, slice::SliceIndex, string::FromUtf8Error};
+#![feature(normalize_lexically)]
+#![feature(path_absolute_method)]
+mod sven;
 
-use schemars::{JsonSchema, schema_for};
-use serde::Deserialize;
-use serde_json::{Value, json};
-use thiserror::Error;
+use std::io::Write;
 
-trait Tool {
-    fn name(&self) -> String;
-    fn description(&self) -> String;
-    fn params(&self) -> Option<Value>;
-    fn execute(&self, params: Value) -> Result<String, Box<dyn Error>>;
-}
+use crate::sven::sven::SvenConfig;
+use crate::sven::tools::find_tool::FindTool;
+use crate::sven::tools::grep_tool::GrepTool;
+use crate::sven::tools::manpage_tool::ManPageTool;
+use crate::sven::tools::read_tool::ReadTool;
+use crate::sven::tools::web_fetch::WebFetch;
+use crate::sven::tools::web_search::WebSearch;
+use crate::sven::tools::{list_files::ListFiles, time_tool::TimeTool};
+use sven::agent::{Agent, AgentConfig};
 
-pub enum ToolError {
-    MissingParameter,
-}
+use crate::sven::tool::{SvenTool, Tool};
+use crate::sven::tool_registry::ToolRegistry;
+use crate::sven::tools::edit_tool::SearchAndReplaceTool;
 
-impl From<FromUtf8Error> for ToolError {
-    fn from(value: FromUtf8Error) -> Self {
-        ToolError::MissingParameter
-    }
-}
+#[tokio::main]
+async fn main() {
+    let search_and_replace_tool = SearchAndReplaceTool;
 
-macro_rules! define_tool {
-    (
-        $tool:ident, $params:ident, $name:literal, $desc:literal,
-        params { $($field:ident : $ty:ty),* $(,)? },
-        execute($args:ident) { $($body:tt)* }
-    ) => {
-        #[derive(Debug, Deserialize, JsonSchema)]
-        struct $params {
-            $($field: $ty,)*
-        }
+    let params = search_and_replace_tool.params().expect("some");
+    println!("{}", params.to_string());
 
-        struct $tool;
 
-        impl Tool for $tool {
-            fn name(&self) -> String { String::from($name) }
-            fn description(&self) -> String { String::from($desc) }
-            fn params(&self) -> Option<Value> {
-                Some(json!(schema_for!($params)))
+    return;
+
+    let config = SvenConfig::load();
+    println!("{}", config.model);
+    println!("{}", config.options.num_ctx);
+
+    let time_tool: Box<dyn Tool> = Box::new(TimeTool);
+    let list_files: Box<dyn Tool> = Box::new(ListFiles);
+    let read_tool: Box<dyn Tool> = Box::new(ReadTool);
+    let web_search: Box<dyn Tool> = Box::new(WebSearch);
+    let web_fetch: Box<dyn Tool> = Box::new(WebFetch);
+    let grep: Box<dyn Tool> = Box::new(GrepTool);
+    let find: Box<dyn Tool> = Box::new(FindTool);
+    let manpage: Box<dyn Tool> = Box::new(ManPageTool);
+
+    let mut registry: ToolRegistry = ToolRegistry::new();
+    registry.register(time_tool);
+    registry.register(list_files);
+    registry.register(read_tool);
+    registry.register(web_search);
+    registry.register(web_fetch);
+    registry.register(manpage);
+    registry.register(grep);
+    registry.register(find);
+
+    let agent = Agent::new(AgentConfig {
+        host: config.host,
+        model: config.model,
+        system_prompt: config.system_prompt,
+        options: config.options,
+        tool_registry: registry,
+    });
+
+    loop {
+        print!("\n> ");
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        if let Ok(_) = std::io::stdin().read_line(&mut input) {
+            if "/close".eq(&input) {
+                break;
             }
-            fn execute(&self, params: Value) -> Result<String, Box<dyn Error>> {
-                let $args: $params = serde_json::from_value(params)?;
-                $($body)*
-            }
+            agent.run(&input).await;
         }
-    };
-}
-
-macro_rules! define_tool2 {
-    (
-        $tool:ident, $params:ident, $desc:literal,
-        execute($args:ident) { $($body:tt)* }
-    ) => {
-        struct $tool;
-
-        impl Tool for $tool {
-            fn name(&self) -> String { String::from(stringify!($tool)) }
-            fn description(&self) -> String { String::from($desc) }
-            fn params(&self) -> Option<Value> {
-                Some(json!(schema_for!($params)))
-            }
-            fn execute(&self, params: Value) -> Result<String, Box<dyn Error>> {
-                let $args: $params = serde_json::from_value(params)?;
-                $($body)*
-            }
-        }
-    };
-}
-
-macro_rules! tools {
-    ($($t:ident),* $(,)?) => {{
-        let mut map: HashMap<String, Box<dyn Tool>> = HashMap::new();
-        $(
-            let t: Box<dyn Tool> = Box::new($t);
-            map.insert(t.name(), t);
-        )*
-        map
-    }};
-}
-
-define_tool!(WriteTool, WriteToolParams, "write_tool", "writes content to a file",
-    params { 
-        path: String,
-        content: String
-    },
-    execute(args) { 
-        std::fs::write(&args.path, &args.content)?;   // ? converts io::Error → Box<dyn Error>
-        Ok(format!("written to: {}", args.path))
     }
-);
-
-define_tool!(ReadTool, ReadToolParams, "read_tool", "reads content from file", 
-    params {
-        path: String,
-        offset: Option<u32>,
-        limit: Option<u32>
-    },
-    execute(args) { 
-        if let  Some(offset) = args.offset {
-            println!("offset; {}", offset);
-        }
-        if let  Some(limit) = args.limit {
-            println!("limit; {}", limit);
-        }
-        Ok(format!("reading content from: {}",  args.path)) 
-    }
-);
-
-define_tool!(ManTool, ManToolParams, "man_tool", "display man pages", 
-    params {
-        man_page: String,
-    },
-    execute(args) { 
-        Ok(format!("displaying man page: {}",  args.man_page)) 
-    }
-);
-
-#[derive(Deserialize, JsonSchema)]
-struct WeatherToolParams {
-    ///  city name for the weather prediction
-    city: String
-}
-define_tool2!(WeatherTool, WeatherToolParams, "show current weather conditions", execute(args) {
-    Ok(format!("current weather in {}: {}", args.city, "sunny".to_string())) 
-});
-
-fn main() {
-    let tools = tools![WeatherTool, ReadTool, WriteTool, ManTool];
-    println!("{}", stringify!(WeatherTool));
-    
-    let r_t = match tools.get("WeatherTool") {
-        Some(t) => t,
-        None => return
-    };
-
-    let p = r_t.params().expect("some");
-    println!("params: {}", p.to_string());
-
-    let result = match r_t.execute(json!({"city":"berlin"})) {
-        Ok(res) => res,
-        Err(e) => e.to_string()
-    };
-
-    println!("{}", result);
 }
