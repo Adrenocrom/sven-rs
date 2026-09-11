@@ -18,5 +18,23 @@ macro_rules! tool {
             }
         }
     };
+
+    (
+        $tool:ident, $desc:literal,
+        execute() { $($body:tt)* }
+    ) => {
+        pub struct $tool;
+        impl crate::sven::tool::Tool for $tool {
+            fn name(&self) -> String { String::from(stringify!($tool)) }
+            fn desc(&self) -> String { String::from($desc) }
+            fn params(&self) -> Option<serde_json::Value> {
+                None
+            }
+            fn execute(&self, _params: serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
+                $($body)*
+            }
+        }
+    };
 }
+
 pub(crate) use tool;
