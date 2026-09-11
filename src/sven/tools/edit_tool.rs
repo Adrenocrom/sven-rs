@@ -19,12 +19,12 @@ tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content 
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(args.path)?;
+            .open(&args.path)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         let new_content = content.replace(args.oldcontent.as_str(), args.newcontent.as_str());
         file.write_all(new_content.as_bytes())?;
-        Ok("Updated successfully".to_string())
+        Ok(format!("File {} replaced successfully", &args.path))
 });
 
 #[derive(Deserialize, Debug, JsonSchema)]
@@ -38,5 +38,5 @@ pub struct ReplaceFileToolParams {
 tool!(ReplaceFileTool, ReplaceFileToolParams, "Replace the whole file with new content. If the file does not exists, a new file is created.", execute(args) {
     security::is_inside_cwd(&args.path)?;
     fs::write(&args.path, &args.newcontent)?;
-    Ok("Success".to_string())
+    Ok(format!("File {} replaced successfully", &args.path))
 });

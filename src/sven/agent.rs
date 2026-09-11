@@ -75,7 +75,8 @@ impl Agent {
                 history.push(json!({
                     "role": "tool",
                     "content": self.process_tool_call(&tool_name, tool_params),
-                    "tool_name": tool_name
+                    "tool_name": tool_name,
+                    "id": tool_call["id"]
                 }));
             }
         }
@@ -110,6 +111,7 @@ impl Agent {
                     Ok(j) => j,
                     Err(e) => {
                         println!("... couldn't decode JSON: {}", e);
+                        println!("... skipping line {:?}", s);
                         return;
                     }
                 };
