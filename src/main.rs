@@ -5,6 +5,7 @@ mod sven;
 use std::io::Write;
 
 use crate::sven::sven::SvenConfig;
+use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
 use crate::sven::tools::find_tool::FindTool;
 use crate::sven::tools::grep_tool::GrepTool;
 use crate::sven::tools::manpage_tool::ManPageTool;
@@ -28,6 +29,8 @@ async fn main() {
     let read_tool: Box<dyn Tool> = Box::new(ReadTool);
     let web_search: Box<dyn Tool> = Box::new(WebSearch);
     let web_fetch: Box<dyn Tool> = Box::new(WebFetch);
+    let search_and_replace_tool: Box<dyn Tool> = Box::new(SearchAndReplaceTool);
+    let replace_file_tool: Box<dyn Tool> = Box::new(ReplaceFileTool);
     let grep: Box<dyn Tool> = Box::new(GrepTool);
     let find: Box<dyn Tool> = Box::new(FindTool);
     let manpage: Box<dyn Tool> = Box::new(ManPageTool);
@@ -35,6 +38,7 @@ async fn main() {
     let mut registry: ToolRegistry = ToolRegistry::new();
     registry.register(time_tool);
     registry.register(list_files);
+    registry.register(search_and_replace_tool);
     registry.register(read_tool);
     registry.register(web_search);
     registry.register(web_fetch);

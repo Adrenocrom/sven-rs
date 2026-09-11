@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions, create_dir_all};
+use std::fs::{self, File, OpenOptions, create_dir_all};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -29,64 +29,19 @@ tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content 
         Ok("Updated successfully".to_string())
 });
 
-//impl Tool for SearchAndReplaceTool {
-//    fn name(&self) -> String {
-//        "SearchAndReplace".to_string()
-//    }
-//
-//    fn description(&self) -> String {
-//        "Search and replace".to_string()
-//    }
-//
-//    fn parameters(&self) -> Option<Value> {
-//        Some(json!({
-//            "type": "object",
-//            "required": ["path", "oldcontent", "newcontent"],
-//            "properties": {
-//                "path": {
-//                    "type": "string",
-//                    "description": "file path"
-//                },
-//                "oldcontent": {
-//                    "type": "string",
-//                    "description": "old content which will be replaced"
-//                },
-//                "newcontent": {
-//                    "type": "string",
-//                    "description": "new content"
-//                },
-//            }
-//        }))
-//    }
-//
-//    fn execute_tool(&self, parameters: Value) -> Result<String, ToolError> {
-//        let path = match parameters.get("path").and_then(|p| p.as_str()) {
-//            Some(p) => p,
-//            None => return Err(ToolError::MissingParameter("path".to_string())),
-//        };
-//        let old_content = match parameters.get("oldcontent").and_then(|p| p.as_str()) {
-//            Some(p) => p,
-//            None => return Err(ToolError::MissingParameter("oldcontent".to_string())),
-//        };
-//        let new_content = match parameters.get("newcontent").and_then(|p| p.as_str()) {
-//            Some(p) => p,
-//            None => return Err(ToolError::MissingParameter("newcontent".to_string())),
-//        };
-//
-//        security::is_inside_cwd(&path)?;
-//
-//        let mut file = OpenOptions::new()
-//            .read(true)
-//            .write(true)
-//            .open(path)?;
-//        let mut content = String::new();
-//        file.read_to_string(&mut content)?;
-//        let new_content = content.replace(old_content, new_content);
-//        file.write_all(new_content.as_bytes())?;
-//        Ok("Updated successfully".to_string())
-//    }
-//}
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct ReplaceFileToolParams {
+    /// file path
+    path: String,
+    /// new content which will replace all contents of the file
+    newcontent: String,
+}
 
+tool!(ReplaceFileTool, ReplaceFileToolParams, "Replace the whole file with new content. If the file does not exists, a new file is created.", execute(args) {
+    security::is_inside_cwd(&args.path)?;
+    fs::write(&args.path, &args.newcontent)?;
+    Ok("Success".to_string())
+});
 //pub struct ReplaceFileTool;
 //impl Tool for ReplaceFileTool {
 //    fn name(&self) -> String {

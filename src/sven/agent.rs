@@ -118,7 +118,8 @@ impl Agent {
                     if !thinking_chunk.is_empty() {
                         if !is_thinking {
                             is_thinking = true;
-                            println!("... start thinking ...\n");
+                            print!("\x1b[38;2;10;140;75m");
+                            //println!("... start thinking ...\n");
                         }
                         thoughts.push_str(&thinking_chunk);
                         print!("{}", &thinking_chunk);
@@ -126,7 +127,8 @@ impl Agent {
                 } else {
                     if is_thinking {
                         is_thinking = false;
-                        println!("\n\n... stopped thinking ...\n");
+                        println!("\x1b[0m\n");
+                        //println!("\n\n... stopped thinking ...\n");
                     }
                 }
 
