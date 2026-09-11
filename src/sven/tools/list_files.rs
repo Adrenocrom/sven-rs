@@ -9,7 +9,7 @@ use crate::sven::security;
 #[derive(Deserialize, Debug, JsonSchema)]
 struct ListFilesParams {
     /// file path
-    path: Option<String>
+    path: Option<String>,
 }
 tool!(ListFiles, ListFilesParams, "List files in current directory", execute(args) {
     let mut command = Command::new("ls");

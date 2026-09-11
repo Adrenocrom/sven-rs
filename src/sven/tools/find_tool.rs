@@ -8,7 +8,7 @@ use crate::sven::macros::tool;
 #[derive(Deserialize, Debug, JsonSchema)]
 struct FindToolParams {
     /// Unix shell‑style wildcard pattern (e.g. "*.py")
-    pattern: String
+    pattern: String,
 }
 tool!(FindTool, FindToolParams, "Search for files whose names match *pattern*.", execute(args) {
     let mut command = Command::new("find");

@@ -2,16 +2,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::sven::macros::tool;
 use crate::sven::security;
-
-#[derive(Deserialize, Debug, JsonSchema)]
-enum ReplaceType {
-    First,
-    All
-}
 
 #[derive(Deserialize, Debug, JsonSchema)]
 struct SearchAndReplaceParams {
@@ -22,7 +16,7 @@ struct SearchAndReplaceParams {
     /// the content to be replaced with
     newcontent: String,
     // type of replacing method, one of First, All and Last
-    replace_type: ReplaceType
+    n: Option<usize>,
 }
 
 tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content in a file", execute(args) {
@@ -33,10 +27,11 @@ tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content 
         .open(&args.path)?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
-    let new_content : String = match args.replace_type {
-        ReplaceType::First => content.replacen(args.oldcontent.as_str(), args.newcontent.as_str(), 1),
-        ReplaceType::All => content.replace(args.oldcontent.as_str(), args.newcontent.as_str()),
+    let new_content : String = match args.n {
+        Some(n) => content.replacen(args.oldcontent.as_str(), args.newcontent.as_str(), n),
+        None => content.replace(args.oldcontent.as_str(), args.newcontent.as_str()),
     };
+    println!("{}", new_content);
     file.set_len(0)?;
     file.write_all(new_content.as_bytes())?;
     Ok(format!("File {} replaced successfully", &args.path))

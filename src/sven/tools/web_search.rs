@@ -8,7 +8,7 @@ use crate::sven::macros::tool;
 #[derive(Deserialize, Debug, JsonSchema)]
 struct WebSearchParams {
     /// The search string to submit to DuckDuckGo. This can be a simple keyword, a phrase, or a more elaborate Boolean expression (e.g., 'site:example.com "error code"').
-    query: String
+    query: String,
 }
 tool!(WebSearch, WebSearchParams, "Search the web via DuckDuckGo. Use WebFetch for further investion" , execute(args) {
     let mut command = Command::new("ddgr");

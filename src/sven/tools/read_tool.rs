@@ -11,9 +11,9 @@ struct ReadToolParams {
     /// file path
     path: String,
     /// number of lines to read (default: whole file)
-    num_lines:  Option<u64>,
+    num_lines: Option<u64>,
     /// offset to start reading from (default: 0)
-    offset:  Option<u64>,
+    offset: Option<u64>,
 }
 tool!(ReadTool, ReadToolParams, "Read a file from a given path, with optional line offset and count.", execute(args) {
     security::is_inside_cwd(&args.path)?;

@@ -8,7 +8,7 @@ use crate::sven::macros::tool;
 #[derive(Deserialize, Debug, JsonSchema)]
 struct WebFetchParams {
     /// URL starting with http:// or https://
-    url: String
+    url: String,
 }
 tool!(WebFetch, WebFetchParams, "Does a GET request to a specified URL.", execute(args) {
     let curl_output = match Command::new("curl")

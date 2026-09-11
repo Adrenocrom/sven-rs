@@ -8,7 +8,7 @@ use crate::sven::macros::tool;
 #[derive(Deserialize, Debug, JsonSchema)]
 struct ManPageToolParams {
     /// name of the man page to display
-    name: String
+    name: String,
 }
 tool!(ManPageTool, ManPageToolParams, "Displays the first page of a manual page. Usage: manpage <name>", execute(args) {
     let mut command = Command::new("man");
