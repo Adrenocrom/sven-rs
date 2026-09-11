@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::sven::macros::define_tool;
+use crate::sven::macros::tool;
 use crate::sven::security;
 use crate::sven::tool::Tool;
 use crate::sven::tool_error::ToolError;
@@ -18,7 +18,7 @@ struct SearchAndReplaceParams {
     oldcontent: String,
     newcontent: String
 }
-define_tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content in a file", execute(args) {
+tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content in a file", execute(args) {
         security::is_inside_cwd(&args.path)?;
         let mut file = OpenOptions::new()
             .read(true)
@@ -89,46 +89,46 @@ define_tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace c
 //    }
 //}
 
-pub struct ReplaceFileTool;
-impl Tool for ReplaceFileTool {
-    fn name(&self) -> String {
-        "replaceFile".to_string()
-    }
-
-    fn description(&self) -> String {
-        "Replace the whole file with new content. If the directory does not exist, it is created. If the file does not exists, a new file is created.".to_string()
-    }
-
-    fn parameters(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "required": ["path", "oldcontent", "newcontent"],
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "file path"
-                },
-                "newcontent": {
-                    "type": "string",
-                    "description": "new content which will replace all contents of the file"
-                },
-            }
-        }))
-    }
-
-    fn execute_tool(&self, parameters: Value) -> Result<String, ToolError> {
-        let path = match parameters.get("path").and_then(|p| p.as_str()) {
-            Some(p) => p,
-            None => return Err(ToolError::MissingParameter("path".to_string())),
-        };
-        let new_content = match parameters.get("newcontent").and_then(|p| p.as_str()) {
-            Some(p) => p,
-            None => return Err(ToolError::MissingParameter("newcontent".to_string())),
-        };
-        security::is_inside_cwd(&path)?;
-
-        //create_dir_all(Path::new(path).parent())?;
-
-        Ok("not implemented correctly".to_string())
-    }
-}
+//pub struct ReplaceFileTool;
+//impl Tool for ReplaceFileTool {
+//    fn name(&self) -> String {
+//        "replaceFile".to_string()
+//    }
+//
+//    fn description(&self) -> String {
+//        "Replace the whole file with new content. If the directory does not exist, it is created. If the file does not exists, a new file is created.".to_string()
+//    }
+//
+//    fn parameters(&self) -> Option<Value> {
+//        Some(json!({
+//            "type": "object",
+//            "required": ["path", "oldcontent", "newcontent"],
+//            "properties": {
+//                "path": {
+//                    "type": "string",
+//                    "description": "file path"
+//                },
+//                "newcontent": {
+//                    "type": "string",
+//                    "description": "new content which will replace all contents of the file"
+//                },
+//            }
+//        }))
+//    }
+//
+//    fn execute_tool(&self, parameters: Value) -> Result<String, ToolError> {
+//        let path = match parameters.get("path").and_then(|p| p.as_str()) {
+//            Some(p) => p,
+//            None => return Err(ToolError::MissingParameter("path".to_string())),
+//        };
+//        let new_content = match parameters.get("newcontent").and_then(|p| p.as_str()) {
+//            Some(p) => p,
+//            None => return Err(ToolError::MissingParameter("newcontent".to_string())),
+//        };
+//        security::is_inside_cwd(&path)?;
+//
+//        //create_dir_all(Path::new(path).parent())?;
+//
+//        Ok("not implemented correctly".to_string())
+//    }
+//}

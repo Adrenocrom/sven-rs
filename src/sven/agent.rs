@@ -167,7 +167,7 @@ impl Agent {
         match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
                 println!("\t🔧  \x1b[32m{}\x1b[0m {}\n", tool_name, params);
-                let result = match tool.execute_tool(params) {
+                let result = match tool.execute(params) {
                     Ok(result) => result,
                     Err(err) => {
                         println!("    \x1b[31mERROR: {}\x1b[0m", err);

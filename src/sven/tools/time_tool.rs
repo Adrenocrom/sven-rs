@@ -1,24 +1,13 @@
 use chrono::Local;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::sven::{tool::Tool, tool_error::ToolError};
+use crate::sven::{macros::tool, tool::Tool, tool_error::ToolError};
 
-pub struct TimeTool;
-impl Tool for TimeTool {
-    fn name(&self) -> String {
-        "time_tool".to_string()
-    }
-
-    fn description(&self) -> String {
-        "Gets  current time".to_string()
-    }
-
-    fn parameters(&self) -> Option<Value> {
-        None
-    }
-
-    fn execute_tool(&self, _parameters: Value) -> Result<String, ToolError> {
-        let now = Local::now();
-        Ok(now.to_string())
-    }
-}
+#[derive(Deserialize, Debug, JsonSchema)]
+struct TimeToolParams;
+tool!(TimeTool, TimeToolParams, "get local date time.", execute(_args) {
+    let now = Local::now();
+    Ok(now.to_string())
+});

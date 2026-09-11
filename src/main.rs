@@ -14,20 +14,11 @@ use crate::sven::tools::web_search::WebSearch;
 use crate::sven::tools::{list_files::ListFiles, time_tool::TimeTool};
 use sven::agent::{Agent, AgentConfig};
 
-use crate::sven::tool::{SvenTool, Tool};
+use crate::sven::tool::Tool;
 use crate::sven::tool_registry::ToolRegistry;
-use crate::sven::tools::edit_tool::SearchAndReplaceTool;
 
 #[tokio::main]
 async fn main() {
-    let search_and_replace_tool = SearchAndReplaceTool;
-
-    let params = search_and_replace_tool.params().expect("some");
-    println!("{}", params.to_string());
-
-
-    return;
-
     let config = SvenConfig::load();
     println!("{}", config.model);
     println!("{}", config.options.num_ctx);
