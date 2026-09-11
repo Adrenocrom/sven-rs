@@ -11,6 +11,55 @@ struct MessageResponse {
     tool_calls: Vec<Value>,
 }
 
+/// Accumulates the assistant output while consuming the NDJSON stream.
+#[derive(Default)]
+struct StreamState {
+    content: String,
+    thinking: String,
+    tool_calls: Vec<Value>,
+    is_thinking: bool,
+    is_answering: bool,
+}
+
+impl StreamState {
+    fn process_json(&mut self, json: &Value) {
+        if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
+            if !thinking_chunk.is_empty() {
+                if !self.is_thinking {
+                    self.is_thinking = true;
+                    print!("\x1b[38;2;10;140;75m");
+                }
+                self.thinking.push_str(thinking_chunk);
+                print!("{}", thinking_chunk);
+            }
+        } else if self.is_thinking {
+            self.is_thinking = false;
+            println!("\x1b[0m\n");
+        }
+
+        if let Some(content_chunk) = json["message"]["content"].as_str() {
+            if !content_chunk.is_empty() {
+                self.is_answering = true;
+                self.content.push_str(content_chunk);
+                print!("{}", content_chunk);
+            }
+        } else if self.is_answering {
+            self.is_answering = false;
+            println!("\n");
+        }
+
+        if json["done"].as_bool() == Some(true) && self.is_answering {
+            print!("\n");
+        }
+
+        if let Some(tcs) = json["message"]["tool_calls"].as_array() {
+            for tc in tcs {
+                self.tool_calls.push(tc.clone());
+            }
+        }
+    }
+}
+
 pub struct AgentConfig {
     pub host: String,
     pub model: String,
@@ -83,93 +132,63 @@ impl Agent {
     }
 
     async fn handle_chunks(&self, response: &mut Response) -> MessageResponse {
-        let mut content: String = String::new();
-        let mut thoughts: String = String::new();
-        let mut tool_calls: Vec<Value> = Vec::new();
-        let mut is_thinking: bool = false;
-        let mut is_answering: bool = false;
-        while let Ok(chunk) = response.chunk().await {
-            let bytes = match chunk {
-                Some(b) => b,
-                None => break,
-            };
+        let mut state = StreamState::default();
 
-            let str = match String::from_utf8(bytes.to_vec()) {
-                Ok(s) => s,
+        // Raw byte buffer: a chunk boundary can fall in the middle of a
+        // JSON line or even inside a multi-byte UTF-8 character, so lines
+        // are only decoded once they are complete.
+        let mut buffer: Vec<u8> = Vec::new();
+
+        loop {
+            let bytes = match response.chunk().await {
+                Ok(Some(b)) => b,
+                Ok(None) => break,
                 Err(e) => {
-                    println!("... couldn't decode utf8 ...{}", e);
+                    eprintln!("stream error: {}", e);
                     break;
                 }
             };
 
-            str.split('\n').for_each(|s| {
-                if s.is_empty() {
-                    return;
+            buffer.extend_from_slice(&bytes);
+
+            // Consume every complete line; an incomplete tail stays in the
+            // buffer until a later chunk completes it.
+            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buffer.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line[..pos]);
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
                 }
 
-                let json: Value = match from_str(&s) {
-                    Ok(j) => j,
+                match from_str::<Value>(line) {
+                    Ok(json) => state.process_json(&json),
                     Err(e) => {
                         println!("... couldn't decode JSON: {}", e);
-                        println!("... skipping line {:?}", s);
-                        return;
-                    }
-                };
-
-                if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
-                    if !thinking_chunk.is_empty() {
-                        if !is_thinking {
-                            is_thinking = true;
-                            print!("\x1b[38;2;10;140;75m");
-                            //println!("... start thinking ...\n");
-                        }
-                        thoughts.push_str(&thinking_chunk);
-                        print!("{}", &thinking_chunk);
-                    }
-                } else {
-                    if is_thinking {
-                        is_thinking = false;
-                        println!("\x1b[0m\n");
-                        //println!("\n\n... stopped thinking ...\n");
+                        println!("... skipping line {:?}", line);
                     }
                 }
-
-                if let Some(content_chunk) = json["message"]["content"].as_str() {
-                    if !content_chunk.is_empty() {
-                        if !is_answering {
-                            is_answering = true;
-                        }
-
-                        content.push_str(&content_chunk);
-                        print!("{}", &content_chunk);
-                    }
-                } else {
-                    if is_answering {
-                        is_answering = false;
-                        println!("\n");
-                    }
-                }
-
-                if let Some(done) = json["done"].as_bool() {
-                    if done && is_answering {
-                        print!("\n");
-                    }
-                }
-
-                if let Some(tcs) = json["message"]["tool_calls"].as_array() {
-                    for tc in tcs {
-                        tool_calls.push(tc.clone());
-                    }
-                }
-            });
+            }
 
             let _ = std::io::stdout().flush();
         }
 
+        // The stream can end without a trailing newline.
+        if !buffer.is_empty() {
+            let line = String::from_utf8_lossy(&buffer);
+            let line = line.trim();
+            if !line.is_empty() {
+                match from_str::<Value>(line) {
+                    Ok(json) => state.process_json(&json),
+                    Err(e) => println!("... couldn't decode JSON: {}", e),
+                }
+            }
+        }
+
         MessageResponse {
-            content: content,
-            thinking: thoughts,
-            tool_calls: tool_calls,
+            content: state.content,
+            thinking: state.thinking,
+            tool_calls: state.tool_calls,
         }
     }
 
