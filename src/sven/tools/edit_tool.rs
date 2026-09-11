@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content 
     };
     println!("{}", new_content);
     file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
     file.write_all(new_content.as_bytes())?;
     Ok(format!("File {} replaced successfully", &args.path))
 });
