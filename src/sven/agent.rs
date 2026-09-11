@@ -93,8 +93,6 @@ impl Agent {
                 None => break,
             };
 
-            let test = String::from_utf8_lossy(&bytes);
-            println!("{}", test);
             let str = match String::from_utf8(bytes.to_vec()) {
                 Ok(s) => s,
                 Err(e) => {
@@ -104,60 +102,62 @@ impl Agent {
             };
 
             str.split('\n').for_each(|s| {
-                println!("{} = size: {}", s, s.len());
+                if s.is_empty() {
+                    return;
+                }
+
+                let json: Value = match from_str(&s) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        println!("... couldn't decode JSON: {}", e);
+                        return;
+                    }
+                };
+
+                if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
+                    if !thinking_chunk.is_empty() {
+                        if !is_thinking {
+                            is_thinking = true;
+                            println!("... start thinking ...\n");
+                        }
+                        thoughts.push_str(&thinking_chunk);
+                        print!("{}", &thinking_chunk);
+                    }
+                } else {
+                    if is_thinking {
+                        is_thinking = false;
+                        println!("\n\n... stopped thinking ...\n");
+                    }
+                }
+
+                if let Some(content_chunk) = json["message"]["content"].as_str() {
+                    if !content_chunk.is_empty() {
+                        if !is_answering {
+                            is_answering = true;
+                        }
+
+                        content.push_str(&content_chunk);
+                        print!("{}", &content_chunk);
+                    }
+                } else {
+                    if is_answering {
+                        is_answering = false;
+                        println!("\n");
+                    }
+                }
+
+                if let Some(done) = json["done"].as_bool() {
+                    if done && is_answering {
+                        print!("\n");
+                    }
+                }
+
+                if let Some(tcs) = json["message"]["tool_calls"].as_array() {
+                    for tc in tcs {
+                        tool_calls.push(tc.clone());
+                    }
+                }
             });
-
-            let json: Value = match from_str(&str) {
-                Ok(j) => j,
-                Err(_) => {
-                    println!("... couldn't decode JSON ...");
-                    break;
-                }
-            };
-
-            if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
-                if !thinking_chunk.is_empty() {
-                    if !is_thinking {
-                        is_thinking = true;
-                        println!("... start thinking ...\n");
-                    }
-                    thoughts.push_str(&thinking_chunk);
-                    print!("{}", &thinking_chunk);
-                }
-            } else {
-                if is_thinking {
-                    is_thinking = false;
-                    println!("\n\n... stopped thinking ...\n");
-                }
-            }
-
-            if let Some(content_chunk) = json["message"]["content"].as_str() {
-                if !content_chunk.is_empty() {
-                    if !is_answering {
-                        is_answering = true;
-                    }
-
-                    content.push_str(&content_chunk);
-                    print!("{}", &content_chunk);
-                }
-            } else {
-                if is_answering {
-                    is_answering = false;
-                    println!("\n");
-                }
-            }
-
-            if let Some(done) = json["done"].as_bool() {
-                if done && is_answering {
-                    print!("\n");
-                }
-            }
-
-            if let Some(tcs) = json["message"]["tool_calls"].as_array() {
-                for tc in tcs {
-                    tool_calls.push(tc.clone());
-                }
-            }
 
             let _ = std::io::stdout().flush();
         }
