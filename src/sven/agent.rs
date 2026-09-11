@@ -11,7 +11,6 @@ struct MessageResponse {
     tool_calls: Vec<Value>,
 }
 
-/// Accumulates the assistant output while consuming the NDJSON stream.
 #[derive(Default)]
 struct StreamState {
     content: String,
@@ -133,10 +132,6 @@ impl Agent {
 
     async fn handle_chunks(&self, response: &mut Response) -> MessageResponse {
         let mut state = StreamState::default();
-
-        // Raw byte buffer: a chunk boundary can fall in the middle of a
-        // JSON line or even inside a multi-byte UTF-8 character, so lines
-        // are only decoded once they are complete.
         let mut buffer: Vec<u8> = Vec::new();
 
         loop {
@@ -150,9 +145,6 @@ impl Agent {
             };
 
             buffer.extend_from_slice(&bytes);
-
-            // Consume every complete line; an incomplete tail stays in the
-            // buffer until a later chunk completes it.
             while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = buffer.drain(..=pos).collect();
                 let line = String::from_utf8_lossy(&line[..pos]);
@@ -173,7 +165,6 @@ impl Agent {
             let _ = std::io::stdout().flush();
         }
 
-        // The stream can end without a trailing newline.
         if !buffer.is_empty() {
             let line = String::from_utf8_lossy(&buffer);
             let line = line.trim();

@@ -3,7 +3,6 @@ pub mod security;
 pub mod security_error;
 pub mod tool;
 pub mod sven;
-pub mod tool_error;
 pub mod tool_registry;
 pub mod tools;
 pub mod macros;

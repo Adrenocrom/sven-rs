@@ -1,7 +1,5 @@
 use serde_json::Value;
 
-use crate::sven::tool_error::ToolError;
-
 pub trait Tool {
     fn name(&self) -> String;
     fn desc(&self) -> String;
