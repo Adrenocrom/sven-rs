@@ -21,11 +21,9 @@ struct SearchAndReplaceParams {
     oldcontent: String,
     /// the content to be replaced with
     newcontent: String,
-
     // type of replacing method, one of First, All and Last
     replace_type: ReplaceType
 }
-
 
 tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content in a file", execute(args) {
     security::is_inside_cwd(&args.path)?;
