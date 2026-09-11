@@ -93,13 +93,19 @@ impl Agent {
                 None => break,
             };
 
+            let test = String::from_utf8_lossy(&bytes);
+            println!("{}", test);
             let str = match String::from_utf8(bytes.to_vec()) {
                 Ok(s) => s,
-                Err(_) => {
-                    println!("... couldn't decode utf8 ...");
+                Err(e) => {
+                    println!("... couldn't decode utf8 ...{}", e);
                     break;
                 }
             };
+
+            str.split('\n').for_each(|s| {
+                println!("{} = size: {}", s, s.len());
+            });
 
             let json: Value = match from_str(&str) {
                 Ok(j) => j,

@@ -2,7 +2,6 @@ use std::io::BufRead;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::sven::macros::tool;
 use crate::sven::security;

@@ -8,8 +8,6 @@ use serde_json::{Value, json};
 
 use crate::sven::macros::tool;
 use crate::sven::security;
-use crate::sven::tool::Tool;
-use crate::sven::tool_error::ToolError;
 
 #[derive(Deserialize, Debug, JsonSchema)]
 struct SearchAndReplaceParams {
