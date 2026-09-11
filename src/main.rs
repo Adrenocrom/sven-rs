@@ -39,7 +39,7 @@ async fn main() {
     registry.register(time_tool);
     registry.register(list_files);
     registry.register(search_and_replace_tool);
-    registry.register(replace_file_tool);
+    //registry.register(replace_file_tool);
     registry.register(read_tool);
     registry.register(web_search);
     registry.register(web_fetch);
