@@ -16,6 +16,7 @@ struct StreamState {
 
 impl StreamState {
     fn process_json(&mut self, json: &Value) {
+        //println!("{}", json.to_string());
         if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
             if !thinking_chunk.is_empty() {
                 if !self.is_thinking {
@@ -43,6 +44,13 @@ impl StreamState {
 
         if json["done"].as_bool() == Some(true) && self.is_answering {
             print!("\n");
+        }
+
+        if 
+            let Some(eval_count) = json["eval_count"].as_u64() && 
+            let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
+        {
+            print!("\n\x1b[1min {} out {} | used (-/-)\x1b[0m", prompt_eval_count, eval_count);
         }
 
         if let Some(tcs) = json["message"]["tool_calls"].as_array() {
