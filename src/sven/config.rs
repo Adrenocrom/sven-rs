@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct ChatOptions {
     pub temperature: f32,
     pub num_ctx: i32,
-    pub repeat_penalty: f32,
+    //pub repeat_penalty: f32,
 }
 
 impl Default for ChatOptions {
@@ -14,7 +14,7 @@ impl Default for ChatOptions {
         Self {
             temperature: 0.1,
             num_ctx: 32000,
-            repeat_penalty: 1.2,
+            //repeat_penalty: 1.2,
         }
     }
 }

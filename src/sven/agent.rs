@@ -3,13 +3,7 @@ use std::io::Write;
 use reqwest::{Client, Response};
 use serde_json::{Value, from_str, json};
 
-use crate::sven::{sven::ChatOptions, tool_registry::ToolRegistry};
-
-struct MessageResponse {
-    content: String,
-    thinking: String,
-    tool_calls: Vec<Value>,
-}
+use crate::sven::{chat_history::{ChatHistory, MessageResponse}, config::ChatOptions, tool_registry::ToolRegistry};
 
 #[derive(Default)]
 struct StreamState {
@@ -70,26 +64,20 @@ pub struct AgentConfig {
 pub struct Agent {
     client: Client,
     config: AgentConfig,
+    history: ChatHistory
 }
 
 impl Agent {
     pub fn new(agent_config: AgentConfig) -> Agent {
         Agent {
             client: Client::new(),
+            history: ChatHistory::new(&agent_config.system_prompt),
             config: agent_config,
         }
     }
 
-    pub async fn run(&self, message: &str) {
-        let mut history: Vec<Value> = vec![];
-        history.push(json!({
-            "role": "system",
-            "content": &self.config.system_prompt
-        }));
-        history.push(json!({
-            "role": "user",
-            "content": &message
-        }));
+    pub async fn run(&mut self, message: &str) {
+        self.history.user(message);
         println!("");
         loop {
             let url = format!("{}/api/chat", &self.config.host);
@@ -98,7 +86,7 @@ impl Agent {
                 "stream": true,
                 "options": &self.config.options,
                 "tools": &self.config.tool_registry.generate_tool_definitions(),
-                "messages": &history
+                "messages": self.history.get()
             }));
             let mut response = match builder.send().await {
                 Ok(r) => r,
@@ -112,20 +100,11 @@ impl Agent {
             if message.tool_calls.is_empty() {
                 break;
             }
-            history.push(json!({
-                "role": "assist",
-                "content": "",
-                "tool_calls": message.tool_calls
-            }));
+            self.history.assistant(&message);
             for tool_call in message.tool_calls {
                 let tool_name = tool_call["function"]["name"].as_str().unwrap();
                 let tool_params = tool_call["function"]["arguments"].clone();
-                history.push(json!({
-                    "role": "tool",
-                    "content": self.process_tool_call(&tool_name, tool_params),
-                    "tool_name": tool_name,
-                    "id": tool_call["id"]
-                }));
+                self.history.tool(&self.process_tool_call(&tool_name, tool_params), &tool_name, None);
             }
         }
     }
@@ -178,7 +157,7 @@ impl Agent {
 
         MessageResponse {
             content: state.content,
-            thinking: state.thinking,
+            //thinking: state.thinking,
             tool_calls: state.tool_calls,
         }
     }
@@ -198,5 +177,9 @@ impl Agent {
             }
             None => return format!("Error: Tool '{}' not found in registry", tool_name),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.history.clear();
     }
 }

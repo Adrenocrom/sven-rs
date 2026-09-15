@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize};
 
 use crate::sven::macros::tool;
 use crate::sven::security;

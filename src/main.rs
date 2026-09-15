@@ -4,7 +4,7 @@ mod sven;
 
 use std::io::Write;
 
-use crate::sven::sven::SvenConfig;
+use crate::sven::config::SvenConfig;
 use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
 use crate::sven::tools::find_tool::FindTool;
 use crate::sven::tools::grep_tool::GrepTool;
@@ -47,7 +47,8 @@ async fn main() {
     registry.register(grep);
     registry.register(find);
 
-    let agent = Agent::new(AgentConfig {
+
+    let mut agent = Agent::new(AgentConfig {
         host: config.host,
         model: config.model,
         system_prompt: config.system_prompt,
@@ -60,10 +61,15 @@ async fn main() {
         let _ = std::io::stdout().flush();
         let mut input = String::new();
         if let Ok(_) = std::io::stdin().read_line(&mut input) {
-            if "/close".eq(&input) {
+            if "/close\n".eq(&input) {
                 break;
             }
-            agent.run(&input).await;
+            else if "/clear\n".eq(&input) {
+                agent.clear();
+            }
+            else {
+                agent.run(&input).await;
+            }
         }
     }
 }
