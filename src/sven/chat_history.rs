@@ -1,3 +1,4 @@
+use chrono::Local;
 use serde_json::{Value, json};
 
 pub struct MessageResponse {
@@ -15,13 +16,19 @@ pub struct ChatHistory {
 impl ChatHistory {
     pub fn new(system_prompt: &str) -> Self {
          Self {
-            history: vec![json!({
-                "role": "system",
-                "content": system_prompt
-            })],
+            history: vec![ChatHistory::system(system_prompt)],
             tool_history: Vec::new(),
             system_prompt: system_prompt.to_string(),
         }
+    }
+
+    fn system(prompt: &str) -> Value {
+        let now = Local::now();
+        let system_prompt = format!("{}\nCurrent Date: {}", prompt, now.to_string());
+        json!({
+            "role": "system",
+            "content": system_prompt
+        })
     }
 
     pub fn user(&mut self, prompt: &str) {
@@ -65,10 +72,7 @@ impl ChatHistory {
 
     pub fn clear(&mut self) {
         self.history.clear();
-        self.history.push(json!({
-            "role": "system",
-            "content": &self.system_prompt
-        }));
+        self.history.push(ChatHistory::system(&self.system_prompt));
         self.tool_history.clear();
     }
 }

@@ -40,7 +40,9 @@ impl Default for SvenConfig {
 
 impl SvenConfig {
     pub fn load() -> SvenConfig {
-        let file = match std::fs::File::open("/home/josef/.config/sven/sven.json") {
+        let home = std::env::var("HOME").expect("HOME environment variable must be set");
+        let path = format!("{}/.config/sven/sven.json", home);
+        let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) => {
                 println!("Error opening file: {}", e);
