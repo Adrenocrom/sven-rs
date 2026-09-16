@@ -21,8 +21,7 @@ use crate::sven::tool_registry::ToolRegistry;
 #[tokio::main]
 async fn main() {
     let config = SvenConfig::load();
-    println!("{}", config.model);
-    println!("{}", config.options.num_ctx);
+    println!("{} ({})", &config.model, &config.options.num_ctx);
 
     let time_tool: Box<dyn Tool> = Box::new(TimeTool);
     let list_files: Box<dyn Tool> = Box::new(ListFiles);
