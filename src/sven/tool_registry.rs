@@ -29,12 +29,19 @@ impl ToolRegistry {
             .iter()
             .map(|entry| {
                 let tool = entry.1;
+                let params = match tool.params() {
+                    Some(params) => params,
+                    None => json!({
+                        "properties" : {},
+                        "type": "object"
+                    })
+                };
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name(),
                         "description": tool.desc(),
-                        "parameters": tool.params()
+                        "parameters": params
                     }
                 })
             })

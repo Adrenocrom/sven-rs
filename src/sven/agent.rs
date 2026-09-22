@@ -16,7 +16,7 @@ struct StreamState {
 
 impl StreamState {
     fn process_json(&mut self, json: &Value) {
-        //println!("{}", json.to_string());
+        //eprintln!("{}", json.to_string());
         if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
             if !thinking_chunk.is_empty() {
                 if !self.is_thinking {
@@ -89,6 +89,7 @@ impl Agent {
         println!("");
         loop {
             let url = format!("{}/api/chat", &self.config.host);
+            //eprintln!("tooldefinitions: {}", &self.config.tool_registry.generate_tool_definitions());
             let builder = self.client.post(url).json(&json!({
                 "model": &self.config.model,
                 "stream": true,
