@@ -3,7 +3,8 @@
 A terminal coding agent for local LLMs, written in Rust. sven-rs talks to any
 Ollama-compatible server via the streaming `POST /api/chat` API and gives the
 model a set of tools so it can act on your workspace — read and edit files,
-search the codebase, look up man pages, and fetch web pages.
+search the codebase, look up man pages, fetch web pages — and a persistent
+skill store so knowledge learned in one session is available in the next.
 
 ## Requirements
 
@@ -39,6 +40,7 @@ if the file is missing or invalid:
 
 ```json
 {
+  "data_dir": "~/.config/sven",
   "model": "gemma4:12b",
   "host": "http://localhost:11434",
   "system_prompt": "",
@@ -48,6 +50,9 @@ if the file is missing or invalid:
   }
 }
 ```
+
+`data_dir` is where the skills store lives (`<data_dir>/skills`); a leading
+`~` is expanded to `$HOME`.
 
 ## Tools
 
@@ -63,6 +68,27 @@ if the file is missing or invalid:
 | `ManPageTool`          | Display a man page                                  |
 | `WebSearch`            | DuckDuckGo search via `ddgr`                        |
 | `WebFetch`             | GET a URL, converted HTML → Markdown via `pandoc`    |
+| `ListSkillsTool`       | List all stored skills with name, description, tags |
+| `SearchSkillsTool`     | Keyword search over skills (name, description, tags, body) |
+| `GetSkillTool`         | Read a skill's full content                         |
+| `AddSkillTool`         | Store new knowledge as a skill                      |
+| `UpdateSkillTool`      | Update a skill's description, tags and/or body      |
+| `RemoveSkillTool`      | Remove a skill and its directory                    |
+
+## Skills
+
+sven-rs has a persistent knowledge store: skills are markdown files under
+`<data_dir>/skills/<kebab-case-name>/SKILL.md`, each with YAML frontmatter
+(name, description, tags, created_at) and a markdown body. The agent is
+instructed to search stored skills before answering a task and to save
+anything worth remembering for future sessions — so knowledge survives
+across runs.
+
+Skill names are sanitized to snake_case identifiers (kebab-case directory
+names), tags to lowercase hyphenated keywords (3–8 after sanitization).
+Because names are reduced to `[a-z0-9-]`, skill paths cannot escape the
+store — the skill tools rely on this sanitization instead of the
+path-confinement check used by the file tools.
 
 ## Security model
 
@@ -85,6 +111,8 @@ if the file is missing or invalid:
   that generates JSON-schema tool definitions for the model.
 - `src/sven/macros.rs` — the `tool!` macro; every tool is defined with it.
 - `src/sven/security.rs` — path-confinement check.
+- `src/sven/skills.rs` — skill store: minimal YAML frontmatter parser,
+  SKILL.md serialization, keyword search.
 - `src/sven/tools/*` — one file per tool.
 
 ### Adding a tool
