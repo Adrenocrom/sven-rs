@@ -21,10 +21,12 @@ use sven::agent::{Agent, AgentConfig};
 
 use crate::sven::tool::Tool;
 use crate::sven::tool_registry::ToolRegistry;
+use crate::sven::skills;
 
 #[tokio::main]
 async fn main() {
     let config = SvenConfig::load();
+    skills::init_skills_dir(&config.data_dir);
     println!("{} ({})", &config.model, &config.options.num_ctx);
 
     let time_tool: Box<dyn Tool> = Box::new(TimeTool);

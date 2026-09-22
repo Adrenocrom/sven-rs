@@ -13,11 +13,39 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use chrono::Local;
 
-pub const SKILLS_DIR: &str = "/home/josef/.config/sven/skills";
+pub const SKILLS_DIR: &str = "skills";
 pub const SKILL_FILE: &str = "SKILL.md";
+
+/// Base directory of the skills store. Defaults to `./skills` (cwd) until
+/// `init_skills_dir` is called with the configured `data_dir`.
+static SKILLS_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Anchor the skills store at `<data_dir>/skills`. Called once at startup,
+/// before any skill tool runs. `data_dir` may start with `~`, which is
+/// expanded to `$HOME`.
+pub fn init_skills_dir(data_dir: &str) {
+    let base = expand_tilde(data_dir);
+    let _ = SKILLS_ROOT.set(base.join(SKILLS_DIR));
+}
+
+/// Expand a leading `~` or `~/` to `$HOME` (the config default
+/// `~/.config/sven` would otherwise create a literal `./~` directory).
+fn expand_tilde(path: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if path == "~" {
+        return home.unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = home {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
 
 // ---------------------------------------------------------------------------
 // Minimal YAML parser
@@ -253,7 +281,10 @@ fn is_snake(name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 pub fn skills_root() -> PathBuf {
-    PathBuf::from(SKILLS_DIR)
+    SKILLS_ROOT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(SKILLS_DIR))
 }
 
 /// Directory of a skill; accepts snake_case or kebab-case input.
@@ -319,10 +350,10 @@ pub fn parse_skill(content: &str, dir: &str) -> Result<Skill, String> {
 
 /// Raw SKILL.md content of one skill (frontmatter + body).
 ///
-/// No `is_inside_cwd` check: the path is built from the fixed `SKILLS_DIR`
-/// plus a name sanitized to `[a-z0-9-]`, so it cannot escape the store. The
-/// cwd check could never pass for a global config dir and made GetSkill and
-/// RemoveSkill fail unconditionally.
+/// No `is_inside_cwd` check: the path is built from the configured skills
+/// root (`<data_dir>/skills`) plus a name sanitized to `[a-z0-9-]`, so it
+/// cannot escape the store. The cwd check could never pass for a global
+/// config dir and made GetSkill and RemoveSkill fail unconditionally.
 pub fn read_skill_file(name: &str) -> Result<String, String> {
     let kebab = to_kebab(name);
     if kebab.is_empty() {

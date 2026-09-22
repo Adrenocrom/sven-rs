@@ -21,6 +21,7 @@ impl Default for ChatOptions {
 
 #[derive(Deserialize, Debug)]
 pub struct SvenConfig {
+    pub data_dir: String,
     pub model: String,
     pub host: String,
     pub system_prompt: String,
@@ -30,6 +31,7 @@ pub struct SvenConfig {
 impl Default for SvenConfig {
     fn default() -> Self {
         Self {
+            data_dir: "~/.config/sven".to_string(),
             model: "gemma4:12b".to_string(),
             host: "http://localhost:11434".to_string(),
             system_prompt: "".to_string(),
