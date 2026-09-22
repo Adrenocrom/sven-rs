@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize};
@@ -48,6 +49,9 @@ pub struct ReplaceFileToolParams {
 
 tool!(ReplaceFileTool, ReplaceFileToolParams, "Replace the whole file with new content. If the file does not exists, a new file is created.", execute(args) {
     security::is_inside_cwd(&args.path)?;
+    if let Some(parent) = Path::new(&args.path).parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&args.path, &args.newcontent)?;
     Ok(format!("File {} replaced successfully", &args.path))
 });
