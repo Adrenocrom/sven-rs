@@ -10,6 +10,10 @@ use crate::sven::tools::find_tool::FindTool;
 use crate::sven::tools::grep_tool::GrepTool;
 use crate::sven::tools::manpage_tool::ManPageTool;
 use crate::sven::tools::read_tool::ReadTool;
+use crate::sven::tools::skill_tools::{
+    AddSkillTool, GetSkillTool, ListSkillsTool, RemoveSkillTool, SearchSkillsTool,
+    UpdateSkillTool,
+};
 use crate::sven::tools::web_fetch::WebFetch;
 use crate::sven::tools::web_search::WebSearch;
 use crate::sven::tools::{list_files::ListFiles, time_tool::TimeTool};
@@ -33,6 +37,12 @@ async fn main() {
     let grep: Box<dyn Tool> = Box::new(GrepTool);
     let find: Box<dyn Tool> = Box::new(FindTool);
     let manpage: Box<dyn Tool> = Box::new(ManPageTool);
+    let add_skill: Box<dyn Tool> = Box::new(AddSkillTool);
+    let update_skill: Box<dyn Tool> = Box::new(UpdateSkillTool);
+    let remove_skill: Box<dyn Tool> = Box::new(RemoveSkillTool);
+    let list_skills: Box<dyn Tool> = Box::new(ListSkillsTool);
+    let search_skills: Box<dyn Tool> = Box::new(SearchSkillsTool);
+    let get_skill: Box<dyn Tool> = Box::new(GetSkillTool);
 
     let mut registry: ToolRegistry = ToolRegistry::new();
     registry.register(time_tool);
@@ -45,6 +55,12 @@ async fn main() {
     registry.register(manpage);
     registry.register(grep);
     registry.register(find);
+    registry.register(add_skill);
+    registry.register(update_skill);
+    registry.register(remove_skill);
+    registry.register(list_skills);
+    registry.register(search_skills);
+    registry.register(get_skill);
 
 
     let mut agent = Agent::new(AgentConfig {
@@ -59,15 +75,22 @@ async fn main() {
         print!("\n> ");
         let _ = std::io::stdout().flush();
         let mut input = String::new();
-        if let Ok(_) = std::io::stdin().read_line(&mut input) {
-            if "/close\n".eq(&input) {
+        // read_line returns Ok(0) on EOF (Ctrl-D); treating that as an empty
+        // line would loop forever sending empty prompts to the model.
+        match std::io::stdin().read_line(&mut input) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                if "/close\n".eq(&input) {
+                    break;
+                } else if "/clear\n".eq(&input) {
+                    agent.clear();
+                } else {
+                    agent.run(&input).await;
+                }
+            }
+            Err(e) => {
+                eprintln!("cannot read input: {}", e);
                 break;
-            }
-            else if "/clear\n".eq(&input) {
-                agent.clear();
-            }
-            else {
-                agent.run(&input).await;
             }
         }
     }

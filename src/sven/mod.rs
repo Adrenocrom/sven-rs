@@ -4,6 +4,7 @@ pub mod macros;
 pub mod security;
 pub mod security_error;
 pub mod config;
+pub mod skills;
 pub mod tool;
 pub mod tool_registry;
 pub mod tools;
