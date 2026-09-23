@@ -5,6 +5,7 @@ mod sven;
 use std::io::Write;
 
 use crate::sven::config::SvenConfig;
+use crate::sven::tools::compile_tool::CompileTool;
 use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
 use crate::sven::tools::find_tool::FindTool;
 use crate::sven::tools::grep_tool::GrepTool;
@@ -19,7 +20,6 @@ use crate::sven::tools::web_search::WebSearch;
 use crate::sven::tools::{list_files::ListFiles, time_tool::TimeTool};
 use sven::agent::{Agent, AgentConfig};
 
-use crate::sven::tool::Tool;
 use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::skills;
 
@@ -29,41 +29,24 @@ async fn main() {
     skills::init_skills_dir(&config.data_dir);
     println!("{} ({})", &config.model, &config.options.num_ctx);
 
-    let time_tool: Box<dyn Tool> = Box::new(TimeTool);
-    let list_files: Box<dyn Tool> = Box::new(ListFiles);
-    let read_tool: Box<dyn Tool> = Box::new(ReadTool);
-    let web_search: Box<dyn Tool> = Box::new(WebSearch);
-    let web_fetch: Box<dyn Tool> = Box::new(WebFetch);
-    let search_and_replace_tool: Box<dyn Tool> = Box::new(SearchAndReplaceTool);
-    let replace_file_tool: Box<dyn Tool> = Box::new(ReplaceFileTool);
-    let grep: Box<dyn Tool> = Box::new(GrepTool);
-    let find: Box<dyn Tool> = Box::new(FindTool);
-    let manpage: Box<dyn Tool> = Box::new(ManPageTool);
-    let add_skill: Box<dyn Tool> = Box::new(AddSkillTool);
-    let update_skill: Box<dyn Tool> = Box::new(UpdateSkillTool);
-    let remove_skill: Box<dyn Tool> = Box::new(RemoveSkillTool);
-    let list_skills: Box<dyn Tool> = Box::new(ListSkillsTool);
-    let search_skills: Box<dyn Tool> = Box::new(SearchSkillsTool);
-    let get_skill: Box<dyn Tool> = Box::new(GetSkillTool);
-
     let mut registry: ToolRegistry = ToolRegistry::new();
-    registry.register(time_tool);
-    registry.register(list_files);
-    registry.register(search_and_replace_tool);
-    registry.register(replace_file_tool);
-    registry.register(read_tool);
-    registry.register(web_search);
-    registry.register(web_fetch);
-    registry.register(manpage);
-    registry.register(grep);
-    registry.register(find);
-    registry.register(add_skill);
-    registry.register(update_skill);
-    registry.register(remove_skill);
-    registry.register(list_skills);
-    registry.register(search_skills);
-    registry.register(get_skill);
-
+    registry.register(Box::new(TimeTool));
+    registry.register(Box::new(ListFiles));
+    registry.register(Box::new(ReadTool));
+    registry.register(Box::new(WebSearch));
+    registry.register(Box::new(WebFetch));
+    registry.register(Box::new(SearchAndReplaceTool));
+    registry.register(Box::new(ReplaceFileTool));
+    registry.register(Box::new(GrepTool));
+    registry.register(Box::new(FindTool));
+    registry.register(Box::new(ManPageTool));
+    registry.register(Box::new(AddSkillTool));
+    registry.register(Box::new(UpdateSkillTool));
+    registry.register(Box::new(RemoveSkillTool));
+    registry.register(Box::new(ListSkillsTool));
+    registry.register(Box::new(SearchSkillsTool));
+    registry.register(Box::new(GetSkillTool));
+    registry.register(Box::new(CompileTool));
 
     let mut agent = Agent::new(AgentConfig {
         host: config.host,

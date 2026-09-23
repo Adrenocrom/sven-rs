@@ -1,4 +1,5 @@
 pub mod edit_tool;
+pub mod compile_tool;
 pub mod find_tool;
 pub mod grep_tool;
 pub mod list_files;
