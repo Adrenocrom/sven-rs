@@ -19,62 +19,62 @@ const MAX_TOOL_ROUNDS: usize = 250;
 const MAX_TOOL_OUTPUT: usize = 10_000;
 
 #[derive(Default)]
-struct StreamState {
-    content: String,
-    tool_calls: Vec<Value>,
-    is_thinking: bool,
-    is_answering: bool,
+pub struct StreamState {
+    pub content: String,
+    pub tool_calls: Vec<Value>,
+    pub is_thinking: bool,
+    pub is_answering: bool,
 }
 
-impl StreamState {
-    fn process_json(&mut self, json: &Value) {
-        if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
-            if !thinking_chunk.is_empty() {
-                if !self.is_thinking {
-                    self.is_thinking = true;
-                    print!("{}", term::thinking());
-                }
-                print!("{}", thinking_chunk);
-            }
-        } else if self.is_thinking {
-            self.is_thinking = false;
-            if term::enabled() {
-                println!("{}\n", term::reset());
-            } else {
-                println!();
-            }
-        }
-
-        if let Some(content_chunk) = json["message"]["content"].as_str() {
-            if !content_chunk.is_empty() {
-                self.is_answering = true;
-                self.content.push_str(content_chunk);
-                print!("{}", content_chunk);
-            }
-        } else if self.is_answering {
-            self.is_answering = false;
-            println!("\n");
-        }
-
-        if json["done"].as_bool() == Some(true) && self.is_answering {
-            print!("\n");
-        }
-
-        if
-            let Some(eval_count) = json["eval_count"].as_u64() &&
-            let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
-        {
-            println!("\n{}", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
-            println!();
-        }
-
-        if let Some(tcs) = json["message"]["tool_calls"].as_array() {
-            for tc in tcs {
-                self.tool_calls.push(tc.clone());
-            }
-        }
-    }
-}
+//impl StreamState {
+//    fn process_json(&mut self, json: &Value) {
+//        if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
+//            if !thinking_chunk.is_empty() {
+//                if !self.is_thinking {
+//                    self.is_thinking = true;
+//                    print!("{}", term::thinking());
+//                }
+//                print!("{}", thinking_chunk);
+//            }
+//        } else if self.is_thinking {
+//            self.is_thinking = false;
+//            if term::enabled() {
+//                println!("{}\n", term::reset());
+//            } else {
+//                println!();
+//            }
+//        }
+//
+//        if let Some(content_chunk) = json["message"]["content"].as_str() {
+//            if !content_chunk.is_empty() {
+//                self.is_answering = true;
+//                self.content.push_str(content_chunk);
+//                print!("{}", content_chunk);
+//            }
+//        } else if self.is_answering {
+//            self.is_answering = false;
+//            println!("\n");
+//        }
+//
+//        if json["done"].as_bool() == Some(true) && self.is_answering {
+//            print!("\n");
+//        }
+//
+//        if
+//            let Some(eval_count) = json["eval_count"].as_u64() &&
+//            let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
+//        {
+//            println!("\n{}", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
+//            println!();
+//        }
+//
+//        if let Some(tcs) = json["message"]["tool_calls"].as_array() {
+//            for tc in tcs {
+//                self.tool_calls.push(tc.clone());
+//            }
+//        }
+//    }
+//}
 
 /// Extract (name, arguments) from a tool-call payload. Local models
 /// regularly emit malformed calls — missing name, non-string name, wrong
@@ -131,7 +131,7 @@ impl Agent {
         self.history.user(message);
         println!("");
         for _round in 0..MAX_TOOL_ROUNDS {
-            let url = Backend::endpoint(&self.config.backend, &self.config.host);
+            let url = &self.config.backend.endpoint(&self.config.host);
             let builder = self.client.post(url).json(&json!({
                 "model": &self.config.model,
                 "stream": true,
@@ -209,7 +209,7 @@ impl Agent {
                 }
 
                 match from_str::<Value>(line) {
-                    Ok(json) => state.process_json(&json),
+                    Ok(json) => self.config.backend.process_json(&mut state, &json),
                     Err(e) => {
                         eprintln!("... couldn't decode JSON: {}", e);
                         eprintln!("... skipping line {:?}", line);
@@ -225,7 +225,7 @@ impl Agent {
             let line = line.trim();
             if !line.is_empty() {
                 match from_str::<Value>(line) {
-                    Ok(json) => state.process_json(&json),
+                    Ok(json) => self.config.backend.process_json(&mut state, &json),
                     Err(e) => eprintln!("... couldn't decode JSON: {}", e),
                 }
             }
