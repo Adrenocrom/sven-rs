@@ -50,7 +50,7 @@ impl StreamState {
             let Some(eval_count) = json["eval_count"].as_u64() && 
             let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
         {
-            print!("\n\x1b[1min {} out {} | used (-/-)\x1b[0m\n", prompt_eval_count, eval_count);
+            print!("\n\x1b[1min {} out {} | used (-/-)\x1b[0m\n\n", prompt_eval_count, eval_count);
         }
 
         if let Some(tcs) = json["message"]["tool_calls"].as_array() {
@@ -86,6 +86,7 @@ impl Agent {
 
     pub async fn run(&mut self, message: &str) {
         self.history.user(message);
+        println!("history: {:?}", &self.history);
         println!("");
         loop {
             let url = format!("{}/api/chat", &self.config.host);
@@ -106,10 +107,10 @@ impl Agent {
             };
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
+            self.history.assistant(&message);
             if message.tool_calls.is_empty() {
                 break;
             }
-            self.history.assistant(&message);
             for tool_call in message.tool_calls {
                 let tool_name = tool_call["function"]["name"].as_str().unwrap();
                 let tool_params = tool_call["function"]["arguments"].clone();

@@ -7,6 +7,7 @@ pub struct MessageResponse {
     pub tool_calls: Vec<Value>,
 }
 
+#[derive(Debug)]
 pub struct ChatHistory {
     history: Vec<Value>,
     tool_history: Vec<Value>,
@@ -43,7 +44,6 @@ impl ChatHistory {
         let mut entry = json!({
             "role": "assistant",
             "content": response.content,
-            "tool_calls": response.tool_calls
         });
 
         if !&response.tool_calls.is_empty() {
