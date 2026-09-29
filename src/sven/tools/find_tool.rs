@@ -18,7 +18,9 @@ tool!(FindTool, FindToolParams, "Search for files whose names match *pattern*.",
     let mut command = Command::new("find");
     if let Some(path) = args.path {
         security::is_inside_cwd(&path)?;
-        command.arg(path);
+        // a leading "-" would be parsed as an option or expression
+        // (e.g. `-delete`), not as a path — force the operand reading
+        command.arg(subprocess::as_operand(&path));
     } else {
         command.arg(".");
     }

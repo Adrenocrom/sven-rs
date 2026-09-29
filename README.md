@@ -97,7 +97,12 @@ path-confinement check used by the file tools.
   symlinks so a link pointing outside the workspace cannot be used to escape.
 - **No shell:** all subprocesses are spawned with explicit argv vectors —
   there is no `sh -c` anywhere — so shell command injection is structurally
-  impossible.
+  impossible. An explicit argv does *not* prevent argument injection: a
+  program may still read a model-controlled string as one of its own
+  options (for `find`, `-delete` is an action, not a path). Every
+  model-controlled operand is therefore guarded — path-like parameters are
+  prefixed with `./` or passed after the `--` end-of-options marker, and
+  man page names, which never legitimately start with `-`, are rejected.
 - **Network:** `WebFetch` only accepts `http://` and `https://` URLs.
 
 ## Architecture

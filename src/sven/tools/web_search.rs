@@ -14,6 +14,8 @@ struct WebSearchParams {
 tool!(WebSearch, WebSearchParams, "Search the web via DuckDuckGo. Use WebFetch for further investigation.", execute(args) {
     let mut command = Command::new("ddgr");
     command.arg("--noprompt");
+    // end-of-options marker: the query is a keyword list, never options
+    command.arg("--");
     command.arg(args.query);
     Ok(subprocess::run(&mut command)?)
 });

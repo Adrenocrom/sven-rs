@@ -17,6 +17,8 @@ tool!(ListFiles, ListFilesParams, "List files in current directory", execute(arg
     command.arg("-1");
     if let Some(path) = args.path {
         security::is_inside_cwd(&path)?;
+        // end-of-options marker: a path like "-la" is an operand
+        command.arg("--");
         command.arg(path);
     }
     Ok(subprocess::run(&mut command)?)
