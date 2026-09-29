@@ -10,7 +10,7 @@ use crate::sven::tool_registry::ToolRegistry;
 
 /// Maximum number of chat rounds with tool calls before the agent gives
 /// up — a model stuck in a tool loop would otherwise run forever.
-const MAX_TOOL_ROUNDS: usize = 25;
+const MAX_TOOL_ROUNDS: usize = 250;
 
 /// Maximum characters of a tool result kept in the conversation. Larger
 /// outputs are truncated so a single tool (e.g. a full man page) cannot

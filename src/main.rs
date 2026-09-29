@@ -104,7 +104,7 @@ async fn main() {
 
     let config = SvenConfig::load();
     skills::init_skills_dir(&config.data_dir);
-    println!("{} ({})", &config.model, &config.options.num_ctx);
+    println!("{} ({})\n", &config.model, &config.options.num_ctx);
 
     let mut agent = build_agent(config.clone());
 
@@ -124,8 +124,8 @@ async fn main() {
     // interactive REPL
     let mut rl = rustyline::DefaultEditor::new().expect("Could not init RustyLine");
     let history_path = skills::expand_tilde(&config.data_dir).join("history");
-    if let Err(e) = rl.load_history(&history_path) {
-        eprintln!("no history to load: {}", e);
+    if let Err(_) = rl.load_history(&history_path) {
+        //eprintln!("no history to load: {}", e);
     }
 
     loop {
