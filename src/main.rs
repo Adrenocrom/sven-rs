@@ -82,10 +82,7 @@ async fn main() {
             for line in stdin.lock().lines() {
                 match line {
                     Ok(line) => {
-                        if let Some((before, _)) = line.split_once(end_of_prompt) {
-                            if !before.is_empty() {
-                                user_prompt.push_str(before);
-                            }
+                        if line.contains(end_of_prompt) {
                             break;
                         }
                         user_prompt.push_str(&line);
@@ -96,12 +93,12 @@ async fn main() {
                 user_prompt.push('\n'); // `lines()` strips the newline, Python's readline() keeps it
             }
 
-            if "/clear\n".eq(&user_prompt) {
-                println!("clear session");
-                agent.clear();
-            }
-            if "/close\n".eq(&user_prompt) {
+            let user_prompt = user_prompt.trim();
+            if "/close".eq(user_prompt) {
                 break;
+            }
+            else if "/clear".eq(user_prompt) {
+                agent.clear();
             }
             else {
                 agent.run(&user_prompt).await;
