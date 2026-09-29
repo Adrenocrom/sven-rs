@@ -86,7 +86,6 @@ impl Agent {
 
     pub async fn run(&mut self, message: &str) {
         self.history.user(message);
-        println!("history: {:?}", &self.history);
         println!("");
         loop {
             let url = format!("{}/api/chat", &self.config.host);
