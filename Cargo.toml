@@ -2,6 +2,9 @@
 name = "sven-rs"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A terminal coding agent for local LLMs"
+repository = "https://github.com/Adrenocrom/sven-rs"
 
 [dependencies]
 chrono = "0.4.45"
@@ -12,4 +15,4 @@ schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

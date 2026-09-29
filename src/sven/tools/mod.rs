@@ -1,11 +1,12 @@
-pub mod edit_tool;
 pub mod compile_tool;
+pub mod edit_tool;
 pub mod find_tool;
 pub mod grep_tool;
 pub mod list_files;
 pub mod manpage_tool;
 pub mod read_tool;
 pub mod skill_tools;
+pub mod subprocess;
 pub mod time_tool;
 pub mod web_fetch;
 pub mod web_search;

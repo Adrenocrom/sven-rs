@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use schemars::JsonSchema;
-use serde::{Deserialize};
+use serde::Deserialize;
 
 use crate::sven::macros::tool;
 use crate::sven::security;
@@ -16,23 +16,28 @@ struct SearchAndReplaceParams {
     oldcontent: String,
     /// the content to be replaced with
     newcontent: String,
-    // type of replacing method, one of First, All and Last
+    /// number of occurrences to replace, starting from the first (default: all)
     n: Option<usize>,
 }
 
 tool!(SearchAndReplaceTool, SearchAndReplaceParams, "search and replace content in a file", execute(args) {
     security::is_inside_cwd(&args.path)?;
+    if args.oldcontent.is_empty() {
+        return Err("oldcontent must not be empty".into());
+    }
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&args.path)?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
+    if !content.contains(&args.oldcontent) {
+        return Err(format!("pattern not found in {}", &args.path).into());
+    }
     let new_content : String = match args.n {
         Some(n) => content.replacen(args.oldcontent.as_str(), args.newcontent.as_str(), n),
         None => content.replace(args.oldcontent.as_str(), args.newcontent.as_str()),
     };
-    println!("{}", new_content);
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(new_content.as_bytes())?;

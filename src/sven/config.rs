@@ -1,12 +1,16 @@
 use std::io::BufReader;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+/// Options passed to the Ollama server with each request. Fields missing
+/// from the config file fall back to these defaults (`#[serde(default)]`
+/// takes them from the `Default` impl).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct ChatOptions {
     pub temperature: f32,
     pub num_ctx: i32,
-    //pub repeat_penalty: f32,
 }
 
 impl Default for ChatOptions {
@@ -14,12 +18,12 @@ impl Default for ChatOptions {
         Self {
             temperature: 0.1,
             num_ctx: 32000,
-            //repeat_penalty: 1.2,
         }
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct SvenConfig {
     pub data_dir: String,
     pub model: String,
@@ -41,26 +45,51 @@ impl Default for SvenConfig {
 }
 
 impl SvenConfig {
+    /// Load `~/.config/sven/sven.json`. Missing fields — or a missing file
+    /// — fall back to the defaults field by field; a file that exists but
+    /// cannot be read or parsed is reported on stderr.
     pub fn load() -> SvenConfig {
-        let home = std::env::var("HOME").expect("HOME environment variable must be set");
-        let path = format!("{}/.config/sven/sven.json", home);
-        let file = match std::fs::File::open(path) {
+        let Some(home) = std::env::var_os("HOME") else {
+            eprintln!("HOME is not set; using default config");
+            return SvenConfig::default();
+        };
+        let path = Path::new(&home).join(".config").join("sven").join("sven.json");
+        let file = match std::fs::File::open(&path) {
             Ok(file) => file,
+            // no config file yet — the defaults are not an error
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return SvenConfig::default();
+            }
             Err(e) => {
-                println!("Error opening file: {}", e);
+                eprintln!("cannot open {}: {}", path.display(), e);
                 return SvenConfig::default();
             }
         };
 
-        let reader = BufReader::new(file);
-
-        let config: SvenConfig = match serde_json::from_reader(reader) {
+        match serde_json::from_reader(BufReader::new(file)) {
             Ok(config) => config,
             Err(e) => {
-                println!("Error parsing JSON: {}", e);
-                return SvenConfig::default();
+                eprintln!("Error parsing {}: {}", path.display(), e);
+                SvenConfig::default()
             }
-        };
-        config
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_config_keeps_defaults_for_missing_fields() {
+        let config: SvenConfig = serde_json::from_str(r#"{"model": "llama3"}"#).unwrap();
+        assert_eq!(config.model, "llama3");
+        assert_eq!(config.host, "http://localhost:11434");
+        assert_eq!(config.options.num_ctx, 32000);
+
+        let config: SvenConfig =
+            serde_json::from_str(r#"{"options": {"temperature": 0.5}}"#).unwrap();
+        assert_eq!(config.options.temperature, 0.5);
+        assert_eq!(config.options.num_ctx, 32000);
     }
 }

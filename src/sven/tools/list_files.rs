@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::sven::macros::tool;
 use crate::sven::security;
+use crate::sven::tools::subprocess;
 
 #[derive(Deserialize, Debug, JsonSchema)]
 struct ListFilesParams {
@@ -18,7 +19,5 @@ tool!(ListFiles, ListFilesParams, "List files in current directory", execute(arg
         security::is_inside_cwd(&path)?;
         command.arg(path);
     }
-    let output = command.output()?;
-    let out = String::from_utf8(output.stdout)?;
-    Ok(out)
+    Ok(subprocess::run(&mut command)?)
 });

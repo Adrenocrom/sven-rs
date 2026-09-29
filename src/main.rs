@@ -1,5 +1,3 @@
-#![feature(normalize_lexically)]
-#![feature(path_absolute_method)]
 mod sven;
 
 use std::io::BufRead;
@@ -7,23 +5,23 @@ use std::io::BufRead;
 use clap::Parser;
 
 use crate::sven::config::SvenConfig;
+use crate::sven::skills;
+use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::tools::compile_tool::CompileTool;
 use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
 use crate::sven::tools::find_tool::FindTool;
 use crate::sven::tools::grep_tool::GrepTool;
+use crate::sven::tools::list_files::ListFiles;
 use crate::sven::tools::manpage_tool::ManPageTool;
 use crate::sven::tools::read_tool::ReadTool;
 use crate::sven::tools::skill_tools::{
     AddSkillTool, GetSkillTool, ListSkillsTool, RemoveSkillTool, SearchSkillsTool,
     UpdateSkillTool,
 };
+use crate::sven::tools::time_tool::TimeTool;
 use crate::sven::tools::web_fetch::WebFetch;
 use crate::sven::tools::web_search::WebSearch;
-use crate::sven::tools::{list_files::ListFiles, time_tool::TimeTool};
 use sven::agent::{Agent, AgentConfig};
-
-use crate::sven::tool_registry::ToolRegistry;
-use crate::sven::skills;
 
 /// Sven is a simple command line ai agent
 #[derive(Parser, Debug)]
@@ -38,14 +36,7 @@ struct Args {
     end_of_prompt: Option<String>
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-
-    let config = SvenConfig::load();
-    skills::init_skills_dir(&config.data_dir);
-    println!("{} ({})", &config.model, &config.options.num_ctx);
-
+fn build_agent(config: SvenConfig) -> Agent {
     let mut registry: ToolRegistry = ToolRegistry::new();
     registry.register(Box::new(TimeTool));
     registry.register(Box::new(ListFiles));
@@ -65,61 +56,105 @@ async fn main() {
     registry.register(Box::new(GetSkillTool));
     registry.register(Box::new(CompileTool));
 
-    let mut agent = Agent::new(AgentConfig {
+    Agent::new(AgentConfig {
         host: config.host,
         model: config.model,
         system_prompt: config.system_prompt,
         options: config.options,
         tool_registry: registry,
-    });
+    })
+}
 
-    let mut rl = rustyline::DefaultEditor::new().expect("Could not init RustyLine");
-    loop {
-        if let Some(end_of_prompt) = &args.end_of_prompt {
-            let stdin = std::io::stdin();
-            let mut user_prompt = String::new();
+/// Read one prompt from stdin until a line containing `end_of_prompt`.
+/// Returns `None` at EOF when no input is pending. On the sentinel line
+/// only the text before the marker is kept.
+fn read_prompt(end_of_prompt: &str) -> Option<String> {
+    let stdin = std::io::stdin();
+    let mut user_prompt = String::new();
+    let mut received = false;
 
-            for line in stdin.lock().lines() {
-                match line {
-                    Ok(line) => {
-                        if line.contains(end_of_prompt) {
-                            break;
-                        }
-                        user_prompt.push_str(&line);
-                    },
-                    Err(_) => return,
-                }
-
-                user_prompt.push('\n'); // `lines()` strips the newline, Python's readline() keeps it
-            }
-
-            let user_prompt = user_prompt.trim();
-            if "/close".eq(user_prompt) {
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => return None,
+        };
+        received = true;
+        match line.find(end_of_prompt) {
+            Some(pos) => {
+                user_prompt.push_str(&line[..pos]);
+                user_prompt.push('\n');
                 break;
             }
-            else if "/clear".eq(user_prompt) {
-                agent.clear();
-            }
-            else {
-                agent.run(&user_prompt).await;
+            None => {
+                user_prompt.push_str(&line);
+                user_prompt.push('\n'); // `lines()` strips the newline
             }
         }
-        else {
-            let readline = rl.readline(&args.prompt);
-            match readline {
-                Ok(line) => {
-                    if "/close".eq(&line) {
-                        break;
-                    } else if "/clear".eq(&line) {
-                        agent.clear();
-                    } else {
-                        agent.run(&line).await;
-                    }
-                },
-                Err(_) => {
+    }
+
+    if !received {
+        return None;
+    }
+    Some(user_prompt.trim().to_string())
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+
+    let config = SvenConfig::load();
+    skills::init_skills_dir(&config.data_dir);
+    println!("{} ({})", &config.model, &config.options.num_ctx);
+
+    let mut agent = build_agent(config.clone());
+
+    if let Some(end_of_prompt) = &args.end_of_prompt {
+        // non-interactive mode: process prompts from stdin until EOF
+        while let Some(user_prompt) = read_prompt(end_of_prompt) {
+            match user_prompt.as_str() {
+                "/close" => return,
+                "/clear" => agent.clear(),
+                "" => continue,
+                _ => agent.run(&user_prompt).await,
+            }
+        }
+        return;
+    }
+
+    // interactive REPL
+    let mut rl = rustyline::DefaultEditor::new().expect("Could not init RustyLine");
+    let history_path = skills::expand_tilde(&config.data_dir).join("history");
+    if let Err(e) = rl.load_history(&history_path) {
+        eprintln!("no history to load: {}", e);
+    }
+
+    loop {
+        let readline = rl.readline(&args.prompt);
+        match readline {
+            Ok(line) => {
+                let line = line.trim();
+                let _ = rl.add_history_entry(line);
+                if "/close".eq(line) {
                     break;
+                } else if "/clear".eq(line) {
+                    agent.clear();
+                } else {
+                    agent.run(line).await;
                 }
+            },
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Ctrl-C clears the line and re-prompts instead of exiting
+                continue;
+            },
+            Err(rustyline::error::ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("readline error: {}", e);
+                break;
             }
         }
+    }
+
+    if let Err(e) = rl.save_history(&history_path) {
+        eprintln!("could not save history: {}", e);
     }
 }

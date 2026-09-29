@@ -8,8 +8,7 @@ skill store so knowledge learned in one session is available in the next.
 
 ## Requirements
 
-- **Rust nightly** — the path-confinement check uses two unstable features
-  (`normalize_lexically`, `path_absolute_method`).
+- **Rust** (stable).
 - An **Ollama-compatible server** (default: `http://localhost:11434`).
 - External binaries used by the tools: `curl` + `pandoc` (web fetch), `ddgr`
   (web search), `man`, `grep`, `find`, `ls`.
@@ -67,7 +66,8 @@ if the file is missing or invalid:
 | `FindTool`             | Find files matching a wildcard pattern              |
 | `ManPageTool`          | Display a man page                                  |
 | `WebSearch`            | DuckDuckGo search via `ddgr`                        |
-| `WebFetch`             | GET a URL, converted HTML → Markdown via `pandoc`    |
+| `WebFetch`            | GET a URL (http/https only), converted HTML → Markdown via `pandoc` |
+| `CompileTool`          | Run `cargo build` and report errors                  |
 | `ListSkillsTool`       | List all stored skills with name, description, tags |
 | `SearchSkillsTool`     | Keyword search over skills (name, description, tags, body) |
 | `GetSkillTool`         | Read a skill's full content                         |
@@ -79,10 +79,9 @@ if the file is missing or invalid:
 
 sven-rs has a persistent knowledge store: skills are markdown files under
 `<data_dir>/skills/<kebab-case-name>/SKILL.md`, each with YAML frontmatter
-(name, description, tags, created_at) and a markdown body. The agent is
-instructed to search stored skills before answering a task and to save
-anything worth remembering for future sessions — so knowledge survives
-across runs.
+(name, description, tags, created_at) and a markdown body. The skill tools
+(`SearchSkillsTool`, `GetSkillTool`, `AddSkillTool`, …) let the model look up
+and store knowledge, so it survives across runs.
 
 Skill names are sanitized to snake_case identifiers (kebab-case directory
 names), tags to lowercase hyphenated keywords (3–8 after sanitization).
@@ -93,11 +92,13 @@ path-confinement check used by the file tools.
 ## Security model
 
 - **Path confinement:** every tool that takes a path (`ReadTool`, both edit
-  tools, `ListFiles`) validates that the path stays inside the current working
-  directory (`src/sven/security.rs`).
+  tools, `ListFiles`, `GrepTool`, `FindTool`) validates that the path stays
+  inside the current working directory (`src/sven/security.rs`), resolving
+  symlinks so a link pointing outside the workspace cannot be used to escape.
 - **No shell:** all subprocesses are spawned with explicit argv vectors —
   there is no `sh -c` anywhere — so shell command injection is structurally
   impossible.
+- **Network:** `WebFetch` only accepts `http://` and `https://` URLs.
 
 ## Architecture
 
@@ -110,10 +111,13 @@ path-confinement check used by the file tools.
 - `src/sven/tool.rs` + `tool_registry.rs` — the `Tool` trait and a registry
   that generates JSON-schema tool definitions for the model.
 - `src/sven/macros.rs` — the `tool!` macro; every tool is defined with it.
-- `src/sven/security.rs` — path-confinement check.
+- `src/sven/security.rs` — path-confinement check (symlink-aware).
+- `src/sven/security_error.rs` — its error type.
+- `src/sven/term.rs` — ANSI colors, gated on TTY and `NO_COLOR`.
 - `src/sven/skills.rs` — skill store: minimal YAML frontmatter parser,
   SKILL.md serialization, keyword search.
-- `src/sven/tools/*` — one file per tool.
+- `src/sven/tools/*` — one file per tool; `subprocess.rs` holds the shared
+  exit-status/stderr-aware command runner.
 
 ### Adding a tool
 
@@ -137,3 +141,13 @@ tool!(MyTool, MyToolParams, "Describe what the tool does.", execute(args) {
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+### Provenance
+
+sven-rs is an independent Rust implementation of the ideas in the Python
+project [Adrenocrom/sven](https://github.com/Adrenocrom/sven) (GPL-3.0). No
+code, comments, prompts or configuration from that project were copied; the
+Rust implementation was written from scratch (different architecture: a
+`tool!` macro with schemars-derived JSON schemas, a streaming NDJSON chat
+parser, a hand-rolled YAML frontmatter parser, a sanitization-based skills
+store). It is distributed under MIT on that basis.

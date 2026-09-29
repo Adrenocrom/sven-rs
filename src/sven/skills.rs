@@ -34,7 +34,7 @@ pub fn init_skills_dir(data_dir: &str) {
 
 /// Expand a leading `~` or `~/` to `$HOME` (the config default
 /// `~/.config/sven` would otherwise create a literal `./~` directory).
-fn expand_tilde(path: &str) -> PathBuf {
+pub fn expand_tilde(path: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if path == "~" {
         return home.unwrap_or_else(|| PathBuf::from(path));

@@ -10,7 +10,7 @@ use crate::sven::security;
 struct ReadToolParams {
     /// file path
     path: String,
-    /// number of lines to read (default: whole file)
+    /// number of lines to read; 0 or missing means the whole file
     num_lines: Option<u64>,
     /// offset to start reading from (default: 0)
     offset: Option<u64>,
