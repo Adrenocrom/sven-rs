@@ -208,12 +208,9 @@ impl Agent {
                     continue;
                 }
 
-                match from_str::<Value>(line) {
-                    Ok(json) => self.config.backend.process_json(&mut state, &json),
-                    Err(e) => {
-                        eprintln!("... couldn't decode JSON: {}", e);
-                        eprintln!("... skipping line {:?}", line);
-                    }
+                if let Err(e) = self.config.backend.process_line(&mut state, &line) {
+                    eprintln!("... couldn't decode JSON: {}", e);
+                    eprintln!("... skipping line {:?}", line);
                 }
             }
 
