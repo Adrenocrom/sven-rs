@@ -3,6 +3,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::sven::backend::Backend;
+
 /// Options passed to the Ollama server with each request. Fields missing
 /// from the config file fall back to these defaults (`#[serde(default)]`
 /// takes them from the `Default` impl).
@@ -10,14 +12,16 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct ChatOptions {
     pub temperature: f32,
-    pub num_ctx: i32,
+    pub num_ctx: Option<i32>,
+    pub max_tokens: Option<i32>
 }
 
 impl Default for ChatOptions {
     fn default() -> Self {
         Self {
             temperature: 0.1,
-            num_ctx: 32000,
+            num_ctx: Some(32000),
+            max_tokens: Some(1024),
         }
     }
 }
@@ -25,9 +29,11 @@ impl Default for ChatOptions {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct SvenConfig {
+    pub backend: Backend,
     pub data_dir: String,
     pub model: String,
     pub host: String,
+    pub api_key: Option<String>,
     pub system_prompt: String,
     pub options: ChatOptions,
 }
@@ -38,8 +44,10 @@ impl Default for SvenConfig {
             data_dir: "~/.config/sven".to_string(),
             model: "gemma4:12b".to_string(),
             host: "http://localhost:11434".to_string(),
+            api_key: None,
             system_prompt: "".to_string(),
             options: ChatOptions::default(),
+            backend: Backend::Ollama
         }
     }
 }
@@ -85,11 +93,11 @@ mod tests {
         let config: SvenConfig = serde_json::from_str(r#"{"model": "llama3"}"#).unwrap();
         assert_eq!(config.model, "llama3");
         assert_eq!(config.host, "http://localhost:11434");
-        assert_eq!(config.options.num_ctx, 32000);
+        assert_eq!(config.options.num_ctx, Some(32000));
 
         let config: SvenConfig =
             serde_json::from_str(r#"{"options": {"temperature": 0.5}}"#).unwrap();
         assert_eq!(config.options.temperature, 0.5);
-        assert_eq!(config.options.num_ctx, 32000);
+        assert_eq!(config.options.num_ctx, Some(32000));
     }
 }

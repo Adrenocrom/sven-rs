@@ -4,6 +4,7 @@ use std::io::BufRead;
 
 use clap::Parser;
 
+use crate::sven::backend::Backend;
 use crate::sven::config::SvenConfig;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
@@ -62,6 +63,7 @@ fn build_agent(config: SvenConfig) -> Agent {
         system_prompt: config.system_prompt,
         options: config.options,
         tool_registry: registry,
+        backend: config.backend
     })
 }
 
@@ -98,13 +100,21 @@ fn read_prompt(end_of_prompt: &str) -> Option<String> {
     Some(user_prompt.trim().to_string())
 }
 
+fn print_header(config: &SvenConfig) {
+    println!("{}", config.backend.to_string());
+    match config.options.num_ctx {
+        Some(num_ctx) => println!("{} ({})\n", &config.model, &num_ctx),
+        None => println!("{}\n", &config.model),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
     let config = SvenConfig::load();
     skills::init_skills_dir(&config.data_dir);
-    println!("{} ({})\n", &config.model, &config.options.num_ctx);
+    print_header(&config);
 
     let mut agent = build_agent(config.clone());
 

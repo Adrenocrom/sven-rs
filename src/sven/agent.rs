@@ -3,6 +3,7 @@ use std::io::Write;
 use reqwest::{Client, Response};
 use serde_json::{Value, from_str, json};
 
+use crate::sven::backend::Backend;
 use crate::sven::chat_history::{ChatHistory, MessageResponse};
 use crate::sven::config::ChatOptions;
 use crate::sven::term;
@@ -108,6 +109,7 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub options: ChatOptions,
     pub tool_registry: ToolRegistry,
+    pub backend: Backend
 }
 
 pub struct Agent {
@@ -129,7 +131,7 @@ impl Agent {
         self.history.user(message);
         println!("");
         for _round in 0..MAX_TOOL_ROUNDS {
-            let url = format!("{}/api/chat", &self.config.host);
+            let url = Backend::endpoint(&self.config.backend, &self.config.host);
             let builder = self.client.post(url).json(&json!({
                 "model": &self.config.model,
                 "stream": true,

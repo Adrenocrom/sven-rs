@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod agent;
 pub mod chat_history;
 pub mod config;
