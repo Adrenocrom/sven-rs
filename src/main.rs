@@ -2,7 +2,9 @@
 #![feature(path_absolute_method)]
 mod sven;
 
-use std::io::Write;
+use std::io::BufRead;
+
+use clap::Parser;
 
 use crate::sven::config::SvenConfig;
 use crate::sven::tools::compile_tool::CompileTool;
@@ -23,8 +25,23 @@ use sven::agent::{Agent, AgentConfig};
 use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::skills;
 
+/// Sven is a simple command line ai agent
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// the prefix to be used as a prompt for the AI
+    #[arg(short, long, default_value_t = ">> ".to_string() )]
+    prompt: String,
+
+    /// if this is set, stdin reads until the value of `end_of_prompt is recieved`
+    #[arg(long)]
+    end_of_prompt: Option<String>
+}
+
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
+
     let config = SvenConfig::load();
     skills::init_skills_dir(&config.data_dir);
     println!("{} ({})", &config.model, &config.options.num_ctx);
@@ -56,26 +73,55 @@ async fn main() {
         tool_registry: registry,
     });
 
+    let mut rl = rustyline::DefaultEditor::new().expect("Could not init RustyLine");
     loop {
-        print!("\n> ");
-        let _ = std::io::stdout().flush();
-        let mut input = String::new();
-        // read_line returns Ok(0) on EOF (Ctrl-D); treating that as an empty
-        // line would loop forever sending empty prompts to the model.
-        match std::io::stdin().read_line(&mut input) {
-            Ok(0) => break, // EOF
-            Ok(_) => {
-                if "/close\n".eq(&input) {
-                    break;
-                } else if "/clear\n".eq(&input) {
-                    agent.clear();
-                } else {
-                    agent.run(&input).await;
+        if let Some(end_of_prompt) = &args.end_of_prompt {
+            let stdin = std::io::stdin();
+            let mut user_prompt = String::new();
+
+            for line in stdin.lock().lines() {
+                match line {
+                    Ok(line) => {
+                        if let Some((before, _)) = line.split_once(end_of_prompt) {
+                            if !before.is_empty() {
+                                user_prompt.push_str(before);
+                            }
+                            break;
+                        }
+                        user_prompt.push_str(&line);
+                    },
+                    Err(_) => return,
                 }
+
+                user_prompt.push('\n'); // `lines()` strips the newline, Python's readline() keeps it
             }
-            Err(e) => {
-                eprintln!("cannot read input: {}", e);
+
+            if "/clear\n".eq(&user_prompt) {
+                println!("clear session");
+                agent.clear();
+            }
+            if "/close\n".eq(&user_prompt) {
                 break;
+            }
+            else {
+                agent.run(&user_prompt).await;
+            }
+        }
+        else {
+            let readline = rl.readline(&args.prompt);
+            match readline {
+                Ok(line) => {
+                    if "/close".eq(&line) {
+                        break;
+                    } else if "/clear".eq(&line) {
+                        agent.clear();
+                    } else {
+                        agent.run(&line).await;
+                    }
+                },
+                Err(_) => {
+                    break;
+                }
             }
         }
     }
