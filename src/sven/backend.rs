@@ -78,10 +78,20 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
             }
             print!("{}", thinking_chunk);
         }
-    } else if stream_state.is_thinking {
+    } 
+    else if let Some(thinking_chunk) = json["choices"][0]["delta"]["reasoning_content"].as_str() {
+        if !thinking_chunk.is_empty() {
+            if !stream_state.is_thinking {
+                stream_state.is_thinking = true;
+                print!("{}", term::thinking());
+            }
+            print!("{}", thinking_chunk);
+        }
+    } 
+    else if stream_state.is_thinking {
         stream_state.is_thinking = false;
         if term::enabled() {
-            println!("{}", term::reset());
+            println!("{}\n", term::reset());
         } else {
             println!();
         }
