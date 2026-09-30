@@ -77,8 +77,7 @@ if the file is missing or invalid:
 
 ### Backends
 
-`backend` selects the server protocol (lowercase; the capitalized forms
-`"Ollama"`/`"OpenAI"` from older configs also parse). The default host is
+`backend` selects the server protocol (lowercase). The default host is
 `http://localhost:11434` for every backend — set `host` explicitly when it
 differs:
 
