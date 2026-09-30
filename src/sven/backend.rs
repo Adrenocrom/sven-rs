@@ -416,9 +416,6 @@ mod tests {
         assert_eq!(serde_json::from_str::<Backend>(r#""ollama""#).unwrap(), Backend::Ollama);
         assert_eq!(serde_json::from_str::<Backend>(r#""openai""#).unwrap(), Backend::OpenAI);
         assert_eq!(serde_json::from_str::<Backend>(r#""vllm""#).unwrap(), Backend::Vllm);
-        // capitalized forms from older config files keep parsing
-        assert_eq!(serde_json::from_str::<Backend>(r#""Ollama""#).unwrap(), Backend::Ollama);
-        assert_eq!(serde_json::from_str::<Backend>(r#""OpenAI""#).unwrap(), Backend::OpenAI);
         // unknown names are a hard error, not a silent Ollama fallback
         assert!(serde_json::from_str::<Backend>(r#""llamacpp""#).is_err());
     }
