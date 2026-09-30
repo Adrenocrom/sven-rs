@@ -34,7 +34,19 @@ struct Args {
 
     /// if this is set, stdin reads until the value of `end_of_prompt is recieved`
     #[arg(long)]
-    end_of_prompt: Option<String>
+    end_of_prompt: Option<String>,
+
+    /// override the backend from the config file (ollama, openai, vllm)
+    #[arg(long)]
+    backend: Option<Backend>,
+
+    /// override the model from the config file
+    #[arg(long)]
+    model: Option<String>,
+
+    /// override the host from the config file
+    #[arg(long)]
+    host: Option<String>,
 }
 
 fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
@@ -115,7 +127,18 @@ fn print_header(config: &SvenConfig) {
 async fn main() {
     let args = Args::parse();
 
-    let config = SvenConfig::load();
+    let mut config = SvenConfig::load();
+    // CLI flags override the config file; anything not given falls back
+    // to what `sven.json` says (or the built-in defaults).
+    if let Some(backend) = args.backend {
+        config.backend = backend;
+    }
+    if let Some(model) = args.model {
+        config.model = model;
+    }
+    if let Some(host) = args.host {
+        config.host = host;
+    }
     skills::init_skills_dir(&config.data_dir);
     print_header(&config);
 

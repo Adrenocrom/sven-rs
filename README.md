@@ -21,6 +21,25 @@ skill store so knowledge learned in one session is available in the next.
 cargo run --release
 ```
 
+`host`, `model` and `backend` can be overridden on the command line without
+touching `sven.json` — useful for trying a different server or model for one
+run:
+
+```bash
+cargo run --release -- --backend vllm --model Qwen/Qwen2.5-7B-Instruct --host http://localhost:8000
+```
+
+| Flag        | Effect                                          |
+| ----------- | ----------------------------------------------- |
+| `--backend` | `ollama`, `openai` or `vllm` (invalid → error)  |
+| `--model`   | Model name sent to the server                    |
+| `--host`    | Server root URL                                 |
+| `--prompt`  | REPL prompt prefix (default `>> `)              |
+| `--end-of-prompt` | Non-interactive mode: read stdin until the marker |
+
+Flags override the config file; anything not given falls back to `sven.json`
+(or the built-in defaults).
+
 At the prompt, type your message and press Enter. The model streams its
 thinking (rendered in green) and its answer inline; tool calls are printed
 with a 🔧 as they execute, and their results are fed back to the model until it

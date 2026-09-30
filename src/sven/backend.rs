@@ -222,9 +222,41 @@ impl ToString for Backend {
     }
 }
 
+/// Parses the `--backend` CLI flag. Accepts exactly the names serde does
+/// (lowercase, plus the capitalized aliases kept for old config files) so
+/// a value that works in `sven.json` also works on the command line.
+impl std::str::FromStr for Backend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ollama" | "Ollama" => Ok(Backend::Ollama),
+            "openai" | "OpenAI" => Ok(Backend::OpenAI),
+            "vllm" => Ok(Backend::Vllm),
+            _ => Err(format!(
+                "unknown backend '{}' (expected one of: ollama, openai, vllm)",
+                s
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_str_accepts_the_same_names_as_serde() {
+        // lowercase — the names the program itself prints
+        assert_eq!("ollama".parse::<Backend>().unwrap(), Backend::Ollama);
+        assert_eq!("openai".parse::<Backend>().unwrap(), Backend::OpenAI);
+        assert_eq!("vllm".parse::<Backend>().unwrap(), Backend::Vllm);
+        // capitalized aliases kept for old config files
+        assert_eq!("Ollama".parse::<Backend>().unwrap(), Backend::Ollama);
+        assert_eq!("OpenAI".parse::<Backend>().unwrap(), Backend::OpenAI);
+        // unknown names are rejected, not silently mapped to a default
+        assert!("llamacpp".parse::<Backend>().is_err());
+    }
 
     fn state_with_fragments() -> StreamState {
         let mut state = StreamState::default();
