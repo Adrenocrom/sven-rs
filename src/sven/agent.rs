@@ -114,7 +114,7 @@ impl Agent {
         for _round in 0..MAX_TOOL_ROUNDS {
             let url = &self.config.backend.endpoint(&self.config.host);
             let mut builder = self.client.post(url).json(&self.request_body());
-            if self.config.backend == Backend::OpenAI {
+            if self.config.backend.is_openai_compatible() {
                 if let Some(api_key) = &self.config.api_key {
                     builder = builder.bearer_auth(api_key);
                 }
@@ -129,6 +129,17 @@ impl Agent {
                     return;
                 }
             };
+
+            // `send()` returns Ok for 4xx/5xx too, and an error body is
+            // not an SSE/NDJSON stream — without this check a wrong model
+            // name or API key would make the agent silently do nothing.
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                self.history.pop_user();
+                eprintln!("error: {} — {}", status, truncate(&body, 500));
+                return;
+            }
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
             self.history.assistant(&message);
@@ -185,9 +196,9 @@ impl Agent {
 
     /// Build the chat request body for the configured backend. Ollama
     /// takes sampler options in an `options` envelope (`num_ctx` sets the
-    /// context window); OpenAI-compatible servers take `temperature` and
-    /// `max_tokens` (an output cap) at the top level and reject unknown
-    /// fields like `options`.
+    /// context window); OpenAI-compatible servers (OpenAI, vLLM) take
+    /// `temperature` and `max_tokens` (an output cap) at the top level
+    /// and reject unknown fields like `options`.
     fn request_body(&self) -> Value {
         match &self.config.backend {
             Backend::Ollama => json!({
@@ -197,7 +208,7 @@ impl Agent {
                 "tools": self.config.tool_registry.tool_definitions(),
                 "messages": self.history.get()
             }),
-            Backend::OpenAI => {
+            Backend::OpenAI | Backend::Vllm => {
                 let mut body = json!({
                     "model": &self.config.model,
                     "stream": true,

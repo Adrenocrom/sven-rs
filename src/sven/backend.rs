@@ -3,10 +3,23 @@ use serde_json::{Value, from_str, json};
 
 use crate::sven::{agent::StreamState, term};
 
+/// Which server protocol to speak. `Vllm` uses the same wire format as
+/// `OpenAI` — vLLM serves an OpenAI-compatible API — but is its own
+/// variant so configs are self-documenting and vLLM-specific behavior
+/// has a place to diverge.
+///
+/// Serde expects the lowercase names (`"ollama"`, `"openai"`, `"vllm"`)
+/// — the same strings `ToString` emits. The capitalized forms the
+/// un-annotated enum used to require are kept as aliases so config files
+/// written before the rename keep parsing.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
+    #[serde(alias = "Ollama")]
     Ollama,
-    OpenAI, // API key lives here
+    #[serde(alias = "OpenAI")]
+    OpenAI,
+    Vllm,
 }
 
 fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
@@ -151,8 +164,16 @@ impl Backend {
     pub fn endpoint(&self, host: &String) -> String {
         match self {
             Backend::Ollama => format!("{}/api/chat", &host),
-            Backend::OpenAI => format!("{}/v1/chat/completions", &host),
+            Backend::OpenAI | Backend::Vllm => format!("{}/v1/chat/completions", &host),
         }
+    }
+
+    /// Whether the server speaks the OpenAI wire format: SSE events,
+    /// `choices[0].delta`, fragmented tool calls, `POST /v1/chat/completions`,
+    /// optional `Authorization: Bearer …` (vLLM only checks it when started
+    /// with `--api-key`; sending it unconditionally is harmless without one).
+    pub fn is_openai_compatible(&self) -> bool {
+        matches!(self, Backend::OpenAI | Backend::Vllm)
     }
 
     pub fn process_line(&self, stream_state: &mut StreamState, line: &str) -> Result<(), serde_json::Error> {
@@ -162,7 +183,7 @@ impl Backend {
                 process_json_ollama(stream_state, &json);
                 Ok(())
             },
-            Backend::OpenAI => {
+            Backend::OpenAI | Backend::Vllm => {
                 //println!("\x1b[33m {}", &line);
                 if line.eq("data: [DONE]") {
                     return Ok(());
@@ -179,11 +200,11 @@ impl Backend {
         }
     }
 
-    /// Called once the stream ended. OpenAI tool calls are only complete
-    /// now that all argument fragments arrived; Ollama sends complete
-    /// calls and has nothing to do.
+    /// Called once the stream ended. OpenAI-style tool calls are only
+    /// complete now that all argument fragments arrived; Ollama sends
+    /// complete calls and has nothing to do.
     pub fn finalize(&self, stream_state: &mut StreamState) {
-        if let Backend::OpenAI = self {
+        if self.is_openai_compatible() {
             let fragments = std::mem::take(&mut stream_state.tool_call_fragments);
             stream_state.tool_calls.extend(fragments.into_values());
         }
@@ -196,15 +217,7 @@ impl ToString for Backend {
         match self {
             Backend::Ollama => "ollama".to_string(),
             Backend::OpenAI => "openai".to_string(),
-        }
-    }
-}
-
-impl From<String> for Backend {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            "openai" => Backend::OpenAI,
-            _ =>  Backend::Ollama, // Default if not supported by the string
+            Backend::Vllm => "vllm".to_string(),
         }
     }
 }
@@ -311,5 +324,61 @@ mod tests {
         // the error chunk carries no choices — nothing is accumulated
         assert!(state.content.is_empty());
         assert!(state.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn vllm_stream_parses_like_openai() {
+        // vLLM serves the OpenAI wire format: SSE events, reasoning under
+        // `reasoning_content` (DeepSeek lineage, used by vLLM's
+        // --reasoning-parser), tool calls fragmented by `index`.
+        let mut state = StreamState::default();
+        let backend = Backend::Vllm;
+        backend
+            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking..."},"finish_reason":null}]}"#)
+            .unwrap();
+        backend
+            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#)
+            .unwrap();
+        backend
+            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-1","type":"function","function":{"name":"TimeTool","arguments":""}}]},"finish_reason":null}]}"#)
+            .unwrap();
+        backend
+            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}"#)
+            .unwrap();
+        backend
+            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .unwrap();
+        backend.process_line(&mut state, "data: [DONE]").unwrap();
+        backend.finalize(&mut state);
+
+        assert_eq!(state.content, "hello");
+        assert_eq!(state.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0]["id"], "chatcmpl-tool-1");
+        assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
+        assert_eq!(state.tool_calls[0]["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn vllm_endpoint_is_openai_compatible() {
+        assert_eq!(
+            Backend::Vllm.endpoint(&"http://localhost:8000".to_string()),
+            "http://localhost:8000/v1/chat/completions"
+        );
+        assert!(Backend::Vllm.is_openai_compatible());
+        assert!(!Backend::Ollama.is_openai_compatible());
+    }
+
+    #[test]
+    fn backend_deserializes_from_lowercase_names() {
+        // the config file uses the same names ToString emits
+        assert_eq!(serde_json::from_str::<Backend>(r#""ollama""#).unwrap(), Backend::Ollama);
+        assert_eq!(serde_json::from_str::<Backend>(r#""openai""#).unwrap(), Backend::OpenAI);
+        assert_eq!(serde_json::from_str::<Backend>(r#""vllm""#).unwrap(), Backend::Vllm);
+        // capitalized forms from older config files keep parsing
+        assert_eq!(serde_json::from_str::<Backend>(r#""Ollama""#).unwrap(), Backend::Ollama);
+        assert_eq!(serde_json::from_str::<Backend>(r#""OpenAI""#).unwrap(), Backend::OpenAI);
+        // unknown names are a hard error, not a silent Ollama fallback
+        assert!(serde_json::from_str::<Backend>(r#""llamacpp""#).is_err());
     }
 }

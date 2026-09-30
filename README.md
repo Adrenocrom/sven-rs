@@ -9,7 +9,9 @@ skill store so knowledge learned in one session is available in the next.
 ## Requirements
 
 - **Rust** (stable).
-- An **Ollama-compatible server** (default: `http://localhost:11434`).
+- An **Ollama-compatible server** (default: `http://localhost:11434`), or an
+  **OpenAI-compatible server** — OpenAI, vLLM, LM Studio, OpenRouter, … — via
+  the `backend` config field (see below).
 - External binaries used by the tools: `curl` + `pandoc` (web fetch), `ddgr`
   (web search), `man`, `grep`, `find`, `ls`.
 
@@ -39,6 +41,7 @@ if the file is missing or invalid:
 
 ```json
 {
+  "backend": "ollama",
   "data_dir": "~/.config/sven",
   "model": "gemma4:12b",
   "host": "http://localhost:11434",
@@ -53,6 +56,48 @@ if the file is missing or invalid:
 `data_dir` is where the skills store lives (`<data_dir>/skills`); a leading
 `~` is expanded to `$HOME`.
 
+### Backends
+
+`backend` selects the server protocol (lowercase; the capitalized forms
+`"Ollama"`/`"OpenAI"` from older configs also parse). The default host is
+`http://localhost:11434` for every backend — set `host` explicitly when it
+differs:
+
+| Value    | Protocol                          | Typical host                 |
+| -------- | --------------------------------- | ---------------------------- |
+| `ollama` | Ollama `POST /api/chat` (NDJSON)  | `http://localhost:11434`     |
+| `openai` | OpenAI `/v1/chat/completions`     | `https://api.openai.com`     |
+| `vllm`   | OpenAI-compatible (vLLM)          | `http://localhost:8000`      |
+
+`vllm` and `openai` share the OpenAI wire format (SSE streaming, fragmented
+tool calls, `tool_call_id` matching); `vllm` exists as its own value so the
+config is self-documenting and vLLM-specific behavior has a place to diverge.
+
+### vLLM
+
+vLLM serves an OpenAI-compatible API, so point `host` at the server root
+(vLLM's default port is 8000) and set `backend` to `vllm`:
+
+```json
+{
+  "backend": "vllm",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "host": "http://localhost:8000"
+}
+```
+
+Tool calling requires the server to be started with
+`--enable-auto-tool-choice --tool-call-parser hermes` (the parser must match
+the model — `hermes` for Qwen, `llama3_json` for Llama 3.1, `mistral` for
+Mistral, …). Without those flags vLLM rejects requests carrying `tools` with
+a 400 error, which sven reports instead of silently doing nothing. For
+reasoning models, add `--reasoning-parser deepseek_r1` to stream the model's
+thinking (vLLM emits it as `reasoning_content`, rendered in green like
+Ollama's `thinking`).
+
+If the server was started with `--api-key`, export the same value as
+`SVEN_API_KEY`; otherwise no key is needed.
+
 ### API key
 
 The API key is **not** part of the config file — it is read from the
@@ -62,9 +107,10 @@ environment variable `SVEN_API_KEY`:
 export SVEN_API_KEY="sk-..."
 ```
 
-It is only sent for the OpenAI backend (as `Authorization: Bearer …`);
-Ollama ignores it. Keeping the key out of `sven.json` means it cannot leak
-through file reads, backups or dotfile syncs.
+It is only sent for the OpenAI-compatible backends (`openai`, `vllm`) as
+`Authorization: Bearer …`; Ollama ignores it. Keeping the key out of
+`sven.json` means it cannot leak through file reads, backups or dotfile
+syncs.
 
 ## Tools
 
@@ -121,9 +167,11 @@ path-confinement check used by the file tools.
 ## Architecture
 
 - `src/main.rs` — REPL loop: loads config, registers tools, runs the agent.
-- `src/sven/agent.rs` — streaming chat loop against `/api/chat`: parses the
-  NDJSON stream, renders thinking/content, dispatches tool calls, and feeds
-  results back to the model.
+- `src/sven/agent.rs` — streaming chat loop: parses the NDJSON (Ollama) or
+  SSE (OpenAI-compatible) stream, renders thinking/content, dispatches tool
+  calls, and feeds results back to the model.
+- `src/sven/backend.rs` — the `Backend` enum (`ollama`, `openai`, `vllm`):
+  endpoint, wire format and stream parsing per server protocol.
 - `src/sven/chat_history.rs` — conversation history sent with each request.
 - `src/sven/config.rs` — config file loading (`SvenConfig::load()`).
 - `src/sven/tool.rs` + `tool_registry.rs` — the `Tool` trait and a registry

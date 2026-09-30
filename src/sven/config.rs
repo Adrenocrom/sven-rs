@@ -98,4 +98,22 @@ mod tests {
         assert_eq!(config.options.temperature, 0.5);
         assert_eq!(config.options.num_ctx, Some(32000));
     }
+
+    #[test]
+    fn backend_field_parses_lowercase_names() {
+        // the value the program itself prints must round-trip
+        let config: SvenConfig = serde_json::from_str(r#"{"backend": "vllm"}"#).unwrap();
+        assert_eq!(config.backend, Backend::Vllm);
+
+        let config: SvenConfig = serde_json::from_str(r#"{"backend": "openai"}"#).unwrap();
+        assert_eq!(config.backend, Backend::OpenAI);
+
+        let config: SvenConfig = serde_json::from_str(r#"{"backend": "ollama"}"#).unwrap();
+        assert_eq!(config.backend, Backend::Ollama);
+    }
+
+    #[test]
+    fn unknown_backend_is_a_parse_error_not_a_silent_fallback() {
+        assert!(serde_json::from_str::<SvenConfig>(r#"{"backend": "llamacpp"}"#).is_err());
+    }
 }

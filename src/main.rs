@@ -4,6 +4,7 @@ use std::io::BufRead;
 
 use clap::Parser;
 
+use crate::sven::backend::Backend;
 use crate::sven::config::SvenConfig;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
@@ -102,9 +103,11 @@ fn read_prompt(end_of_prompt: &str) -> Option<String> {
 
 fn print_header(config: &SvenConfig) {
     println!("{}", config.backend.to_string());
-    match config.options.num_ctx {
-        Some(num_ctx) => println!("{} ({})\n", &config.model, &num_ctx),
-        None => println!("{}\n", &config.model),
+    // `num_ctx` is an Ollama-only option — OpenAI-compatible servers
+    // (openai, vllm) ignore it, so it is not shown for them
+    match (&config.backend, config.options.num_ctx) {
+        (Backend::Ollama, Some(num_ctx)) => println!("{} ({})\n", &config.model, &num_ctx),
+        _ => println!("{}\n", &config.model),
     }
 }
 
