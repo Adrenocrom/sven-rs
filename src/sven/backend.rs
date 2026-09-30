@@ -189,14 +189,13 @@ impl From<String> for Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn state_with_fragments() -> StreamState {
         let mut state = StreamState::default();
-        let mut backend = Backend::OpenAI;
+        let backend = Backend::OpenAI;
         backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ReadTool","arguments":""}}]}}]}"#).unwrap();
         backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \"src/main.rs\"}"}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"src/main.rs\"}"}}]}}]}"#).unwrap();
         backend.process_line(&mut state, "data: [DONE]").unwrap();
         backend.finalize(&mut state);
         state
@@ -239,7 +238,7 @@ mod tests {
     fn ollama_tool_calls_are_complete_without_finalize() {
         let mut state = StreamState::default();
         let backend = Backend::Ollama;
-        backend.process_line(&mut state, r#"{"message":{"tool_calls":[{"function":{"name":"TimeTool","arguments":{}}]},"done":true}}"#).unwrap();
+        backend.process_line(&mut state, r#"{"message":{"tool_calls":[{"function":{"name":"TimeTool","arguments":{}}}]},"done":true}"#).unwrap();
         backend.finalize(&mut state);
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
