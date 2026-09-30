@@ -20,7 +20,7 @@ pub fn enabled() -> bool {
 pub fn tool_color(backend: &Backend, text: &str) -> String {
     if enabled() {
         let color = match backend {
-            Backend::Ollama => "\x1b[31m",
+            Backend::Ollama => "\x1b[32m",
             Backend::OpenAI => "\x1b[38;2;75;125;255m",
             Backend::Vllm => "\x1b[38;2;255;10;140m",
         };
