@@ -15,9 +15,7 @@ use crate::sven::{agent::StreamState, term};
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
-    #[serde(alias = "Ollama")]
     Ollama,
-    #[serde(alias = "OpenAI")]
     OpenAI,
     Vllm,
 }
