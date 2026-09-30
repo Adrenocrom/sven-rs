@@ -36,7 +36,7 @@ struct Args {
     end_of_prompt: Option<String>
 }
 
-fn build_agent(config: SvenConfig) -> Agent {
+fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     let mut registry: ToolRegistry = ToolRegistry::new();
     registry.register(Box::new(TimeTool));
     registry.register(Box::new(ListFiles));
@@ -63,7 +63,7 @@ fn build_agent(config: SvenConfig) -> Agent {
         options: config.options,
         tool_registry: registry,
         backend: config.backend,
-        api_key: config.api_key,
+        api_key,
     })
 }
 
@@ -116,7 +116,10 @@ async fn main() {
     skills::init_skills_dir(&config.data_dir);
     print_header(&config);
 
-    let mut agent = build_agent(config.clone());
+    // The API key never goes in the config file — it is read from the
+    // environment so it cannot leak through file reads or backups.
+    let api_key = std::env::var("SVEN_API_KEY").ok().filter(|key| !key.is_empty());
+    let mut agent = build_agent(config.clone(), api_key);
 
     if let Some(end_of_prompt) = &args.end_of_prompt {
         // non-interactive mode: process prompts from stdin until EOF

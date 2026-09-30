@@ -53,6 +53,19 @@ if the file is missing or invalid:
 `data_dir` is where the skills store lives (`<data_dir>/skills`); a leading
 `~` is expanded to `$HOME`.
 
+### API key
+
+The API key is **not** part of the config file — it is read from the
+environment variable `SVEN_API_KEY`:
+
+```bash
+export SVEN_API_KEY="sk-..."
+```
+
+It is only sent for the OpenAI backend (as `Authorization: Bearer …`);
+Ollama ignores it. Keeping the key out of `sven.json` means it cannot leak
+through file reads, backups or dotfile syncs.
+
 ## Tools
 
 | Tool                   | What it does                                        |

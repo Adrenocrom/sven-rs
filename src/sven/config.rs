@@ -33,7 +33,6 @@ pub struct SvenConfig {
     pub data_dir: String,
     pub model: String,
     pub host: String,
-    pub api_key: Option<String>,
     pub system_prompt: String,
     pub options: ChatOptions,
 }
@@ -44,7 +43,6 @@ impl Default for SvenConfig {
             data_dir: "~/.config/sven".to_string(),
             model: "gemma4:12b".to_string(),
             host: "http://localhost:11434".to_string(),
-            api_key: None,
             system_prompt: "".to_string(),
             options: ChatOptions::default(),
             backend: Backend::Ollama
