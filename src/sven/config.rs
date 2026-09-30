@@ -21,7 +21,7 @@ impl Default for ChatOptions {
         Self {
             temperature: 0.1,
             num_ctx: Some(32000),
-            max_tokens: Some(1024),
+            max_tokens: None,
         }
     }
 }

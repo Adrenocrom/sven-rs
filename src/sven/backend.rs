@@ -153,6 +153,7 @@ impl Backend {
                 Ok(())
             },
             Backend::OpenAI => {
+                //println!("\x1b[33m {}", &line);
                 if line.eq("data: [DONE]") {
                     return Ok(());
                 }
