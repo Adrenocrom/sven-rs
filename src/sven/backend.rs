@@ -25,7 +25,7 @@ fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
         if !thinking_chunk.is_empty() {
             if !stream_state.is_thinking {
                 stream_state.is_thinking = true;
-                print!("{}", term::thinking());
+                print!("{}", term::thinking(&Backend::Ollama));
             }
             print!("{}", thinking_chunk);
         }
@@ -68,7 +68,7 @@ fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
     }
 }
 
-fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
+fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &Value) {
     // Some servers report failures mid-stream as a top-level `error`
     // object instead of closing the connection; every `choices` access
     // below would silently return null for such chunks.
@@ -85,7 +85,7 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
         if !thinking_chunk.is_empty() {
             if !stream_state.is_thinking {
                 stream_state.is_thinking = true;
-                print!("{}", term::thinking());
+                print!("{}", term::thinking(&backend));
             }
             print!("{}", thinking_chunk);
         }
@@ -94,7 +94,7 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
         if !thinking_chunk.is_empty() {
             if !stream_state.is_thinking {
                 stream_state.is_thinking = true;
-                print!("{}", term::thinking());
+                print!("{}", term::thinking(&backend));
             }
             print!("{}", thinking_chunk);
         }
@@ -201,7 +201,7 @@ impl Backend {
                     return Ok(());
                 };
                 let json = from_str::<Value>(payload)?;
-                process_json_openai(stream_state, &json);
+                process_json_openai(&self, stream_state, &json);
                 Ok(())
             }
         }

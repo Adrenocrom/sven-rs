@@ -6,6 +6,8 @@
 use std::io::IsTerminal;
 use std::sync::OnceLock;
 
+use crate::sven::backend::Backend;
+
 static COLOR: OnceLock<bool> = OnceLock::new();
 
 pub fn enabled() -> bool {
@@ -42,9 +44,13 @@ pub fn bold(text: &str) -> String {
 }
 
 /// Escape sequence opening the "thinking" color.
-pub fn thinking() -> &'static str {
+pub fn thinking(backend: &Backend) -> &'static str {
     if enabled() {
-        "\x1b[38;2;10;140;75m"
+        match backend {
+            Backend::Ollama => "\x1b[38;2;10;140;75m",
+            Backend::OpenAI => "\x1b[38;2;10;75;140m",
+            Backend::Vllm => "\x1b[38;2;140;10;75m",
+        }
     } else {
         ""
     }
