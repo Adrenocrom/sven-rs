@@ -30,6 +30,10 @@ pub struct StreamState {
     pub tool_call_fragments: BTreeMap<u64, Value>,
     pub is_thinking: bool,
     pub is_answering: bool,
+    /// `finish_reason` of the final OpenAI chunk (`stop`, `length`,
+    /// `tool_calls`, …). None while the stream is still running, and
+    /// always None for Ollama, which signals the end via `done` instead.
+    pub finish_reason: Option<String>,
 }
 
 /// Extract (name, arguments, id) from a tool-call payload. Local models
@@ -129,6 +133,21 @@ impl Agent {
             let message: MessageResponse = self.handle_chunks(&mut response).await;
             self.history.assistant(&message);
             if message.tool_calls.is_empty() {
+                // `length` means the model hit the `max_tokens` cap —
+                // common with reasoning models, whose thinking counts
+                // against the cap. The answer is cut off mid-sentence
+                // (or mid-thought, with no content at all), so the
+                // truncation is reported instead of silently returning
+                // to the prompt.
+                if message.finish_reason.as_deref() == Some("length") {
+                    println!(
+                        "{}",
+                        term::red(
+                            "Response cut off by max_tokens (finish_reason: length). \
+                             Raise `options.max_tokens` in the config."
+                        )
+                    );
+                }
                 return;
             }
             for tool_call in message.tool_calls {
@@ -246,6 +265,7 @@ impl Agent {
         MessageResponse {
             content: state.content,
             tool_calls: state.tool_calls,
+            finish_reason: state.finish_reason,
         }
     }
 

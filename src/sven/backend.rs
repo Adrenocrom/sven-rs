@@ -58,6 +58,18 @@ fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
 }
 
 fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
+    // Some servers report failures mid-stream as a top-level `error`
+    // object instead of closing the connection; every `choices` access
+    // below would silently return null for such chunks.
+    if let Some(error) = json.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        eprintln!("stream error: {}", message);
+        return;
+    }
+
     if let Some(thinking_chunk) = json["choices"][0]["delta"]["reasoning"].as_str() {
         if !thinking_chunk.is_empty() {
             if !stream_state.is_thinking {
@@ -86,8 +98,8 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
         println!("\n");
     }
 
-    if json["choices"][0].get("finish_reason") == None && stream_state.is_answering {
-        print!("\n");
+    if let Some(finish_reason) = json["choices"][0].get("finish_reason").and_then(Value::as_str) {
+        stream_state.finish_reason = Some(finish_reason.to_string());
     }
 
     // OpenAI streams each tool call as fragments: the first carries
@@ -250,6 +262,43 @@ mod tests {
         let backend = Backend::OpenAI;
         backend.process_line(&mut state, ": keep-alive").unwrap();
         backend.process_line(&mut state, "").unwrap();
+        assert!(state.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn finish_reason_is_captured_from_the_final_chunk() {
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        // regular chunks carry finish_reason: null
+        backend
+            .process_line(
+                &mut state,
+                r#"data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#,
+            )
+            .unwrap();
+        assert_eq!(state.finish_reason, None);
+        // the final chunk carries the actual reason
+        backend
+            .process_line(
+                &mut state,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+            )
+            .unwrap();
+        assert_eq!(state.finish_reason.as_deref(), Some("length"));
+    }
+
+    #[test]
+    fn mid_stream_error_object_is_reported() {
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend
+            .process_line(
+                &mut state,
+                r#"data: {"error":{"message":"context length exceeded","type":"server_error"}}"#,
+            )
+            .unwrap();
+        // the error chunk carries no choices — nothing is accumulated
+        assert!(state.content.is_empty());
         assert!(state.tool_calls.is_empty());
     }
 }

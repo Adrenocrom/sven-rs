@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 pub struct MessageResponse {
     pub content: String,
     pub tool_calls: Vec<Value>,
+    /// Why the model stopped (`stop`, `length`, `tool_calls`, …). OpenAI
+    /// only; Ollama has no equivalent and leaves it None.
+    pub finish_reason: Option<String>,
 }
 
 /// Conversation history. `history` holds the durable messages (system,
@@ -117,6 +120,14 @@ mod tests {
         json!({"function": {"name": name, "arguments": {}}})
     }
 
+    fn response(content: &str, tool_calls: Vec<Value>) -> MessageResponse {
+        MessageResponse {
+            content: content.to_string(),
+            tool_calls,
+            finish_reason: None,
+        }
+    }
+
     fn roles(history: &ChatHistory) -> Vec<&str> {
         history
             .get()
@@ -130,17 +141,11 @@ mod tests {
     fn orders_messages_across_tool_rounds() {
         let mut history = ChatHistory::new("sys");
         history.user("question");
-        history.assistant(&MessageResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("ReadTool")],
-        });
+        history.assistant(&response("", vec![tool_call("ReadTool")]));
         history.tool("file contents", "ReadTool", None);
         assert_eq!(roles(&history), ["system", "user", "assistant", "tool"]);
 
-        history.assistant(&MessageResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("GrepTool")],
-        });
+        history.assistant(&response("", vec![tool_call("GrepTool")]));
         history.tool("matches", "GrepTool", None);
         assert_eq!(
             roles(&history),
@@ -149,10 +154,7 @@ mod tests {
 
         // the final answer ends the turn; the next user message drops the
         // finished tool round from the context
-        history.assistant(&MessageResponse {
-            content: "final answer".to_string(),
-            tool_calls: Vec::new(),
-        });
+        history.assistant(&response("final answer", Vec::new()));
         history.user("next question");
         assert_eq!(roles(&history), ["system", "user", "assistant", "user"]);
     }
@@ -168,10 +170,7 @@ mod tests {
         assert_eq!(history.get().len(), 1);
 
         history.user("q");
-        history.assistant(&MessageResponse {
-            content: "a".to_string(),
-            tool_calls: Vec::new(),
-        });
+        history.assistant(&response("a", Vec::new()));
         history.pop_user(); // trailing message is assistant — no-op
         assert_eq!(history.get().len(), 3);
     }
@@ -180,13 +179,10 @@ mod tests {
     fn tool_results_carry_the_call_id() {
         let mut history = ChatHistory::new("sys");
         history.user("q");
-        history.assistant(&MessageResponse {
-            content: String::new(),
-            tool_calls: vec![json!({
-                "id": "call_1",
-                "function": {"name": "ReadTool", "arguments": {"path": "src/main.rs"}}
-            })],
-        });
+        history.assistant(&response("", vec![json!({
+            "id": "call_1",
+            "function": {"name": "ReadTool", "arguments": {"path": "src/main.rs"}}
+        })]));
         history.tool("file contents", "ReadTool", Some("call_1"));
         let messages = history.get();
         let tool_message = messages.last().unwrap();
