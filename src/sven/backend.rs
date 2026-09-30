@@ -144,6 +144,15 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
             if let Some(id) = tc.get("id").and_then(Value::as_str) {
                 entry["id"] = json!(id);
             }
+            // `type` must survive the merge: the merged call is echoed
+            // back to the server inside the assistant message on the
+            // next round, and OpenAI-compatible servers reject the
+            // whole request when a tool call lacks `type: "function"`
+            // (litellm in front of vLLM answers 400 naming
+            // `ChatCompletionMessageFunctionToolCallParam`).
+            if let Some(tool_type) = tc.get("type").and_then(Value::as_str) {
+                entry["type"] = json!(tool_type);
+            }
             if let Some(name) = tc["function"]["name"].as_str() {
                 if !name.is_empty() {
                     entry["function"]["name"] = json!(name);
@@ -275,6 +284,7 @@ mod tests {
         assert_eq!(state.tool_calls.len(), 1);
         let tc = &state.tool_calls[0];
         assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["type"], "function");
         assert_eq!(tc["function"]["name"], "ReadTool");
         assert_eq!(tc["function"]["arguments"], r#"{"path":"src/main.rs"}"#);
     }
@@ -387,6 +397,7 @@ mod tests {
         assert_eq!(state.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(state.tool_calls[0]["id"], "chatcmpl-tool-1");
+        assert_eq!(state.tool_calls[0]["type"], "function");
         assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
         assert_eq!(state.tool_calls[0]["function"]["arguments"], "{}");
     }

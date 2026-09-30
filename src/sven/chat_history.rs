@@ -62,7 +62,21 @@ impl ChatHistory {
         });
 
         if !response.tool_calls.is_empty() {
-            entry["tool_calls"] = json!(&response.tool_calls);
+            // Every tool call needs `type: "function"` when it is echoed
+            // back inside the assistant message — OpenAI-compatible
+            // servers reject the request without it (litellm returns a
+            // 400 naming `ChatCompletionMessageFunctionToolCallParam`).
+            // Servers don't always include it: vLLM puts it only on the
+            // first streamed fragment, Ollama omits it entirely, so it
+            // is defaulted here, where history becomes the next request
+            // body. Ollama ignores the extra field.
+            let mut tool_calls = response.tool_calls.clone();
+            for tool_call in &mut tool_calls {
+                if tool_call.get("type").and_then(Value::as_str).is_none() {
+                    tool_call["type"] = json!("function");
+                }
+            }
+            entry["tool_calls"] = json!(tool_calls);
             self.tool_history.push(entry);
             return;
         }
@@ -189,6 +203,20 @@ mod tests {
         assert_eq!(tool_message["role"], "tool");
         assert_eq!(tool_message["tool_call_id"], "call_1");
         assert_eq!(tool_message["tool_name"], "ReadTool");
+    }
+
+    #[test]
+    fn tool_calls_sent_back_always_carry_type_function() {
+        let mut history = ChatHistory::new("sys");
+        history.user("q");
+        // Ollama-shaped call: no `type`, object arguments — the field is
+        // defaulted so the history is valid for any backend
+        history.assistant(&response("", vec![json!({
+            "function": {"name": "TimeTool", "arguments": {}}
+        })]));
+        let messages = history.get();
+        let assistant = messages.last().unwrap();
+        assert_eq!(assistant["tool_calls"][0]["type"], "function");
     }
 
     #[test]
