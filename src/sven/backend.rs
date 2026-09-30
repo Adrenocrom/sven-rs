@@ -102,7 +102,7 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
     else if stream_state.is_thinking {
         stream_state.is_thinking = false;
         if term::enabled() {
-            println!("{}\n", term::reset());
+            println!("{}", term::reset());
         } else {
             println!();
         }
