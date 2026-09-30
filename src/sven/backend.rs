@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde_json::{Value, from_str};
+use serde_json::{Value, from_str, json};
 
 use crate::sven::{agent::StreamState, term};
 
@@ -90,10 +90,37 @@ fn process_json_openai(stream_state: &mut StreamState, json: &Value) {
         print!("\n");
     }
 
-    //print!("{}", json);
+    // OpenAI streams each tool call as fragments: the first carries
+    // `index`, `id` and the function `name` with an empty `arguments`
+    // string, the following ones carry `index` and a string *fragment* of
+    // the arguments. They are merged by `index` here and only become
+    // complete calls in `finalize`.
     if let Some(tcs) = json["choices"][0]["delta"]["tool_calls"].as_array() {
         for tc in tcs {
-            stream_state.tool_calls.push(tc.clone());
+            let Some(index) = tc.get("index").and_then(Value::as_u64) else {
+                // no index — treat the fragment as a complete call
+                stream_state.tool_calls.push(tc.clone());
+                continue;
+            };
+            let entry = stream_state
+                .tool_call_fragments
+                .entry(index)
+                .or_insert_with(|| json!({"function": {"name": "", "arguments": ""}}));
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                entry["id"] = json!(id);
+            }
+            if let Some(name) = tc["function"]["name"].as_str() {
+                if !name.is_empty() {
+                    entry["function"]["name"] = json!(name);
+                }
+            }
+            if let Some(args) = tc["function"]["arguments"].as_str() {
+                let merged = entry["function"]["arguments"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                entry["function"]["arguments"] = json!(merged + args);
+            }
         }
     }
 }
@@ -117,19 +144,25 @@ impl Backend {
                 if line.eq("data: [DONE]") {
                     return Ok(());
                 }
-                let mut line = line.rsplit("data: ");
-                let line = line.next().unwrap();
-                let json = from_str::<Value>(&line)?;
+                let Some(payload) = line.strip_prefix("data: ") else {
+                    // SSE comments (": keep-alive") and empty lines are
+                    // skipped; anything else is not a data event
+                    return Ok(());
+                };
+                let json = from_str::<Value>(payload)?;
                 process_json_openai(stream_state, &json);
                 Ok(())
             }
         }
     }
 
-    pub fn process_json(&self, stream_state: &mut StreamState, json: &Value) {
-        match self {
-            Backend::Ollama => process_json_ollama(stream_state, json),
-            Backend::OpenAI => process_json_openai(stream_state, json),
+    /// Called once the stream ended. OpenAI tool calls are only complete
+    /// now that all argument fragments arrived; Ollama sends complete
+    /// calls and has nothing to do.
+    pub fn finalize(&self, stream_state: &mut StreamState) {
+        if let Backend::OpenAI = self {
+            let fragments = std::mem::take(&mut stream_state.tool_call_fragments);
+            stream_state.tool_calls.extend(fragments.into_values());
         }
     }
 
@@ -150,5 +183,74 @@ impl From<String> for Backend {
             "openai" => Backend::OpenAI,
             _ =>  Backend::Ollama, // Default if not supported by the string
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn state_with_fragments() -> StreamState {
+        let mut state = StreamState::default();
+        let mut backend = Backend::OpenAI;
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ReadTool","arguments":""}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \"src/main.rs\"}"}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, "data: [DONE]").unwrap();
+        backend.finalize(&mut state);
+        state
+    }
+
+    #[test]
+    fn openai_tool_call_fragments_are_merged_by_index() {
+        let state = state_with_fragments();
+        assert_eq!(state.tool_calls.len(), 1);
+        let tc = &state.tool_calls[0];
+        assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["function"]["name"], "ReadTool");
+        assert_eq!(tc["function"]["arguments"], r#"{"path":"src/main.rs"}"#);
+    }
+
+    #[test]
+    fn merged_openai_tool_calls_parse() {
+        let state = state_with_fragments();
+        let (name, args, id) = crate::sven::agent::parse_tool_call(&state.tool_calls[0]).unwrap();
+        assert_eq!(name, "ReadTool");
+        assert_eq!(args["path"], "src/main.rs");
+        assert_eq!(id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn parallel_openai_tool_calls_stay_separate() {
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"TimeTool","arguments":""}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"ListFiles","arguments":""}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}"#).unwrap();
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}"#).unwrap();
+        backend.finalize(&mut state);
+        assert_eq!(state.tool_calls.len(), 2);
+        assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
+        assert_eq!(state.tool_calls[1]["function"]["name"], "ListFiles");
+    }
+
+    #[test]
+    fn ollama_tool_calls_are_complete_without_finalize() {
+        let mut state = StreamState::default();
+        let backend = Backend::Ollama;
+        backend.process_line(&mut state, r#"{"message":{"tool_calls":[{"function":{"name":"TimeTool","arguments":{}}]},"done":true}}"#).unwrap();
+        backend.finalize(&mut state);
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
+    }
+
+    #[test]
+    fn sse_comment_lines_are_skipped() {
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend.process_line(&mut state, ": keep-alive").unwrap();
+        backend.process_line(&mut state, "").unwrap();
+        assert!(state.tool_calls.is_empty());
     }
 }

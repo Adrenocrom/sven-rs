@@ -4,7 +4,6 @@ use std::io::BufRead;
 
 use clap::Parser;
 
-use crate::sven::backend::Backend;
 use crate::sven::config::SvenConfig;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
@@ -63,7 +62,8 @@ fn build_agent(config: SvenConfig) -> Agent {
         system_prompt: config.system_prompt,
         options: config.options,
         tool_registry: registry,
-        backend: config.backend
+        backend: config.backend,
+        api_key: config.api_key,
     })
 }
 

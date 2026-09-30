@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use reqwest::{Client, Response};
@@ -22,65 +23,24 @@ const MAX_TOOL_OUTPUT: usize = 10_000;
 pub struct StreamState {
     pub content: String,
     pub tool_calls: Vec<Value>,
+    /// OpenAI streams each tool call as fragments keyed by `index`; they
+    /// are merged here while the stream runs and moved into `tool_calls`
+    /// by `Backend::finalize` once it ended. Ollama sends complete tool
+    /// calls and never touches this.
+    pub tool_call_fragments: BTreeMap<u64, Value>,
     pub is_thinking: bool,
     pub is_answering: bool,
 }
 
-//impl StreamState {
-//    fn process_json(&mut self, json: &Value) {
-//        if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
-//            if !thinking_chunk.is_empty() {
-//                if !self.is_thinking {
-//                    self.is_thinking = true;
-//                    print!("{}", term::thinking());
-//                }
-//                print!("{}", thinking_chunk);
-//            }
-//        } else if self.is_thinking {
-//            self.is_thinking = false;
-//            if term::enabled() {
-//                println!("{}\n", term::reset());
-//            } else {
-//                println!();
-//            }
-//        }
-//
-//        if let Some(content_chunk) = json["message"]["content"].as_str() {
-//            if !content_chunk.is_empty() {
-//                self.is_answering = true;
-//                self.content.push_str(content_chunk);
-//                print!("{}", content_chunk);
-//            }
-//        } else if self.is_answering {
-//            self.is_answering = false;
-//            println!("\n");
-//        }
-//
-//        if json["done"].as_bool() == Some(true) && self.is_answering {
-//            print!("\n");
-//        }
-//
-//        if
-//            let Some(eval_count) = json["eval_count"].as_u64() &&
-//            let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
-//        {
-//            println!("\n{}", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
-//            println!();
-//        }
-//
-//        if let Some(tcs) = json["message"]["tool_calls"].as_array() {
-//            for tc in tcs {
-//                self.tool_calls.push(tc.clone());
-//            }
-//        }
-//    }
-//}
-
-/// Extract (name, arguments) from a tool-call payload. Local models
+/// Extract (name, arguments, id) from a tool-call payload. Local models
 /// regularly emit malformed calls — missing name, non-string name, wrong
 /// shape — so every access is checked and problems are reported as a
 /// string instead of panicking.
-fn parse_tool_call(tool_call: &Value) -> Result<(String, Value), String> {
+///
+/// `arguments` differs per backend: Ollama sends a JSON object, OpenAI a
+/// JSON-encoded *string* (which may be empty). Both are normalized to a
+/// Value here so `Tool::execute` always receives an object.
+pub(crate) fn parse_tool_call(tool_call: &Value) -> Result<(String, Value, Option<String>), String> {
     let function = tool_call
         .get("function")
         .ok_or_else(|| "missing 'function' object".to_string())?;
@@ -88,8 +48,23 @@ fn parse_tool_call(tool_call: &Value) -> Result<(String, Value), String> {
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| "missing or non-string 'name'".to_string())?;
-    let arguments = function.get("arguments").cloned().unwrap_or(Value::Null);
-    Ok((name.to_string(), arguments))
+    let arguments = match function.get("arguments") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(encoded)) => {
+            if encoded.trim().is_empty() {
+                json!({})
+            } else {
+                from_str::<Value>(encoded)
+                    .map_err(|e| format!("invalid JSON in 'arguments': {}", e))?
+            }
+        }
+        Some(arguments) => arguments.clone(),
+    };
+    let id = tool_call
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok((name.to_string(), arguments, id))
 }
 
 /// Cap `output` at `max` characters (not bytes — the cut must not split a
@@ -109,7 +84,9 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub options: ChatOptions,
     pub tool_registry: ToolRegistry,
-    pub backend: Backend
+    pub backend: Backend,
+    /// Sent as `Authorization: Bearer …`; only the OpenAI backend uses it.
+    pub api_key: Option<String>,
 }
 
 pub struct Agent {
@@ -132,13 +109,12 @@ impl Agent {
         println!("");
         for _round in 0..MAX_TOOL_ROUNDS {
             let url = &self.config.backend.endpoint(&self.config.host);
-            let builder = self.client.post(url).json(&json!({
-                "model": &self.config.model,
-                "stream": true,
-                "options": &self.config.options,
-                "tools": self.config.tool_registry.tool_definitions(),
-                "messages": self.history.get()
-            }));
+            let mut builder = self.client.post(url).json(&self.request_body());
+            if self.config.backend == Backend::OpenAI {
+                if let Some(api_key) = &self.config.api_key {
+                    builder = builder.bearer_auth(api_key);
+                }
+            }
             let mut response = match builder.send().await {
                 Ok(r) => r,
                 Err(e) => {
@@ -156,7 +132,7 @@ impl Agent {
                 return;
             }
             for tool_call in message.tool_calls {
-                let (tool_name, tool_params) = match parse_tool_call(&tool_call) {
+                let (tool_name, tool_params, tool_call_id) = match parse_tool_call(&tool_call) {
                     Ok(parsed) => parsed,
                     Err(reason) => {
                         // a malformed call becomes a tool result describing
@@ -168,12 +144,15 @@ impl Agent {
                             truncate(&tool_call.to_string(), 500)
                         );
                         println!("    {}", term::red(&error));
-                        self.history.tool(&error, "malformed", None);
+                        // keep the id when the fragment carried one, so
+                        // the result can still be matched to its call
+                        let id = tool_call.get("id").and_then(Value::as_str);
+                        self.history.tool(&error, "malformed", id);
                         continue;
                     }
                 };
                 let result = self.process_tool_call(&tool_name, tool_params);
-                self.history.tool(&result, &tool_name, None);
+                self.history.tool(&result, &tool_name, tool_call_id.as_deref());
             }
         }
 
@@ -183,6 +162,36 @@ impl Agent {
         );
         println!("{}", term::red(&note));
         self.history.assistant_note(&note);
+    }
+
+    /// Build the chat request body for the configured backend. Ollama
+    /// takes sampler options in an `options` envelope (`num_ctx` sets the
+    /// context window); OpenAI-compatible servers take `temperature` and
+    /// `max_tokens` (an output cap) at the top level and reject unknown
+    /// fields like `options`.
+    fn request_body(&self) -> Value {
+        match &self.config.backend {
+            Backend::Ollama => json!({
+                "model": &self.config.model,
+                "stream": true,
+                "options": &self.config.options,
+                "tools": self.config.tool_registry.tool_definitions(),
+                "messages": self.history.get()
+            }),
+            Backend::OpenAI => {
+                let mut body = json!({
+                    "model": &self.config.model,
+                    "stream": true,
+                    "temperature": self.config.options.temperature,
+                    "tools": self.config.tool_registry.tool_definitions(),
+                    "messages": self.history.get()
+                });
+                if let Some(max_tokens) = self.config.options.max_tokens {
+                    body["max_tokens"] = json!(max_tokens);
+                }
+                body
+            }
+        }
     }
 
     async fn handle_chunks(&self, response: &mut Response) -> MessageResponse {
@@ -208,7 +217,7 @@ impl Agent {
                     continue;
                 }
 
-                if let Err(e) = self.config.backend.process_line(&mut state, &line) {
+                if let Err(e) = self.config.backend.process_line(&mut state, line) {
                     eprintln!("... couldn't decode JSON: {}", e);
                     eprintln!("... skipping line {:?}", line);
                 }
@@ -217,16 +226,22 @@ impl Agent {
             let _ = std::io::stdout().flush();
         }
 
+        // a stream can end without a trailing newline; whatever is left
+        // in the buffer is still a complete line
         if !buffer.is_empty() {
             let line = String::from_utf8_lossy(&buffer);
             let line = line.trim();
             if !line.is_empty() {
-                match from_str::<Value>(line) {
-                    Ok(json) => self.config.backend.process_json(&mut state, &json),
-                    Err(e) => eprintln!("... couldn't decode JSON: {}", e),
+                if let Err(e) = self.config.backend.process_line(&mut state, line) {
+                    eprintln!("... couldn't decode JSON: {}", e);
+                    eprintln!("... skipping line {:?}", line);
                 }
             }
         }
+
+        // OpenAI tool calls are only complete now that every fragment
+        // arrived; Ollama calls were already complete
+        self.config.backend.finalize(&mut state);
 
         MessageResponse {
             content: state.content,
@@ -264,12 +279,35 @@ mod tests {
 
     #[test]
     fn parses_well_formed_tool_calls() {
-        let (name, args) = parse_tool_call(&json!({
+        let (name, args, id) = parse_tool_call(&json!({
             "function": {"name": "ReadTool", "arguments": {"path": "src/main.rs"}}
         }))
         .unwrap();
         assert_eq!(name, "ReadTool");
         assert_eq!(args["path"], "src/main.rs");
+        assert_eq!(id, None);
+    }
+
+    #[test]
+    fn parses_openai_tool_calls_with_string_arguments() {
+        let (name, args, id) = parse_tool_call(&json!({
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "ReadTool", "arguments": "{\"path\": \"src/main.rs\"}"}
+        }))
+        .unwrap();
+        assert_eq!(name, "ReadTool");
+        assert_eq!(args["path"], "src/main.rs");
+        assert_eq!(id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn empty_openai_arguments_decode_to_an_empty_object() {
+        let (_, args, _) = parse_tool_call(&json!({
+            "function": {"name": "TimeTool", "arguments": ""}
+        }))
+        .unwrap();
+        assert_eq!(args, json!({}));
     }
 
     #[test]
@@ -278,6 +316,7 @@ mod tests {
         assert!(parse_tool_call(&json!({"function": {}})).is_err());
         assert!(parse_tool_call(&json!({"function": {"name": 42}})).is_err());
         assert!(parse_tool_call(&json!({"function": {"arguments": {}}})).is_err());
+        assert!(parse_tool_call(&json!({"function": {"name": "X", "arguments": "not json"}})).is_err());
     }
 
     #[test]

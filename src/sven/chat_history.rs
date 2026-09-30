@@ -67,12 +67,18 @@ impl ChatHistory {
         self.history.push(entry);
     }
 
-    pub fn tool(&mut self, content: &str, tool_name: &str, _id: Option<Value>) {
-        self.tool_history.push(json!({
+    pub fn tool(&mut self, content: &str, tool_name: &str, tool_call_id: Option<&str>) {
+        let mut entry = json!({
             "role": "tool",
             "content": content,
             "tool_name": tool_name,
-        }));
+        });
+        // OpenAI matches a tool result to its call via `tool_call_id`;
+        // Ollama ignores the field, so it is always sent when known.
+        if let Some(id) = tool_call_id {
+            entry["tool_call_id"] = json!(id);
+        }
+        self.tool_history.push(entry);
     }
 
     /// Append a plain assistant message to the current tool round (used
@@ -168,6 +174,25 @@ mod tests {
         });
         history.pop_user(); // trailing message is assistant — no-op
         assert_eq!(history.get().len(), 3);
+    }
+
+    #[test]
+    fn tool_results_carry_the_call_id() {
+        let mut history = ChatHistory::new("sys");
+        history.user("q");
+        history.assistant(&MessageResponse {
+            content: String::new(),
+            tool_calls: vec![json!({
+                "id": "call_1",
+                "function": {"name": "ReadTool", "arguments": {"path": "src/main.rs"}}
+            })],
+        });
+        history.tool("file contents", "ReadTool", Some("call_1"));
+        let messages = history.get();
+        let tool_message = messages.last().unwrap();
+        assert_eq!(tool_message["role"], "tool");
+        assert_eq!(tool_message["tool_call_id"], "call_1");
+        assert_eq!(tool_message["tool_name"], "ReadTool");
     }
 
     #[test]
