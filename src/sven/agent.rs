@@ -285,7 +285,7 @@ impl Agent {
     pub fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
-                println!("\t🔧  {} {}\n", term::green(tool_name), params);
+                println!("\t🔧  {} {}\n", term::tool_color(&self.config.backend,tool_name), params);
                 match tool.execute(params) {
                     Ok(result) => result,
                     Err(err) => {

@@ -17,13 +17,27 @@ pub fn enabled() -> bool {
 }
 
 /// Green — tool-call headers.
-pub fn green(text: &str) -> String {
+pub fn tool_color(backend: &Backend, text: &str) -> String {
     if enabled() {
-        format!("\x1b[32m{text}\x1b[0m")
+        let color = match backend {
+            Backend::Ollama => "\x1b[31m",
+            Backend::OpenAI => "\x1b[38;2;75;125;255m",
+            Backend::Vllm => "\x1b[38;2;255;10;140m",
+        };
+        format!("{color}{text}\x1b[0m")
     } else {
         text.to_string()
     }
 }
+
+/// Green — tool-call headers.
+//pub fn green(text: &str) -> String {
+//    if enabled() {
+//        format!("\x1b[32m{text}\x1b[0m")
+//    } else {
+//        text.to_string()
+//    }
+//}
 
 /// Red — errors.
 pub fn red(text: &str) -> String {
