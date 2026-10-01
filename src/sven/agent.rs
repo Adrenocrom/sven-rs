@@ -110,7 +110,6 @@ impl Agent {
 
     pub async fn run(&mut self, message: &str) {
         self.history.user(message);
-        println!("");
         for _round in 0..MAX_TOOL_ROUNDS {
             let url = &self.config.backend.endpoint(&self.config.host);
             let mut builder = self.client.post(url).json(&self.request_body());
@@ -285,7 +284,7 @@ impl Agent {
     pub fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
-                println!("\t🔧  {} {}\n", term::tool_color(&self.config.backend,tool_name), params);
+                println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), params);
                 match tool.execute(params) {
                     Ok(result) => result,
                     Err(err) => {

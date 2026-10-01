@@ -61,6 +61,7 @@ pub fn bold(text: &str) -> String {
 pub fn thinking(backend: &Backend) -> &'static str {
     if enabled() {
         match backend {
+            //Backend::Ollama => "\x1b[48;2;120;120;120m",
             Backend::Ollama => "\x1b[38;2;10;140;75m",
             Backend::OpenAI => "\x1b[38;2;10;75;140m",
             Backend::Vllm => "\x1b[38;2;140;10;75m",

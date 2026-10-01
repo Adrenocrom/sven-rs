@@ -20,45 +20,65 @@ pub enum Backend {
     Vllm,
 }
 
-fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
-    if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
-        if !thinking_chunk.is_empty() {
-            if !stream_state.is_thinking {
-                stream_state.is_thinking = true;
-                print!("{}", term::thinking(&Backend::Ollama));
-            }
-            print!("{}", thinking_chunk);
-        }
-    } else if stream_state.is_thinking {
+fn end_thinking(stream_state: &mut StreamState) {
+    if stream_state.is_thinking {
         stream_state.is_thinking = false;
         if term::enabled() {
-            println!("{}\n", term::reset());
+            println!("{}", term::reset());
         } else {
             println!();
         }
     }
+}
 
-    if let Some(content_chunk) = json["message"]["content"].as_str() {
-        if !content_chunk.is_empty() {
-            stream_state.is_answering = true;
-            stream_state.content.push_str(content_chunk);
-            print!("{}", content_chunk);
+fn print_thinking(backend: &Backend, stream_state: &mut StreamState, chunk: &str) {
+    if !chunk.is_empty() {
+        if !stream_state.is_thinking {
+            stream_state.is_thinking = true;
+            print!("\n{}", term::thinking(&backend));
         }
-    } else if stream_state.is_answering {
-        stream_state.is_answering = false;
-        println!("\n");
+        print!("{}", chunk);
+    }
+}
+
+fn print_content(stream_state: &mut StreamState, chunk: &str) {
+    if !chunk.is_empty() {
+        end_thinking(stream_state);
+
+        if !stream_state.is_answering {
+            stream_state.is_answering = true;
+            println!();
+        }
+
+        stream_state.content.push_str(chunk);
+        print!("{}", chunk);
+    }
+    else {
+        if stream_state.is_answering {
+            stream_state.is_answering = false;
+            println!("");
+        }
+    }
+}
+
+fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
+    if let Some(thinking_chunk) = json["message"]["thinking"].as_str() {
+        print_thinking(&Backend::Ollama, stream_state, thinking_chunk);
     }
 
-    if json["done"].as_bool() == Some(true) && stream_state.is_answering {
-        print!("\n");
+    if let Some(content_chunk) = json["message"]["content"].as_str() {
+        print_content(stream_state, content_chunk);
+    }
+
+    if json["done"].as_bool() == Some(true) {
+        end_thinking(stream_state);
     }
 
     if
         let Some(eval_count) = json["eval_count"].as_u64() &&
         let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
     {
-        println!("\n{}", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
-        println!();
+        println!("\n{}\n", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
     }
 
     if let Some(tcs) = json["message"]["tool_calls"].as_array() {
@@ -82,45 +102,20 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
     }
 
     if let Some(thinking_chunk) = json["choices"][0]["delta"]["reasoning"].as_str() {
-        if !thinking_chunk.is_empty() {
-            if !stream_state.is_thinking {
-                stream_state.is_thinking = true;
-                print!("{}", term::thinking(&backend));
-            }
-            print!("{}", thinking_chunk);
-        }
+        print_thinking(&backend, stream_state, thinking_chunk);
     } 
     else if let Some(thinking_chunk) = json["choices"][0]["delta"]["reasoning_content"].as_str() {
-        if !thinking_chunk.is_empty() {
-            if !stream_state.is_thinking {
-                stream_state.is_thinking = true;
-                print!("{}", term::thinking(&backend));
-            }
-            print!("{}", thinking_chunk);
-        }
+        print_thinking(&backend, stream_state, thinking_chunk);
     } 
-    else if stream_state.is_thinking {
-        stream_state.is_thinking = false;
-        if term::enabled() {
-            println!("{}\n", term::reset());
-        } else {
-            println!();
-        }
-    }
 
     if let Some(content_chunk) = json["choices"][0]["delta"]["content"].as_str() {
-        if !content_chunk.is_empty() {
-            stream_state.is_answering = true;
-            stream_state.content.push_str(content_chunk);
-            print!("{}", content_chunk);
-        }
-    } else if stream_state.is_answering {
-        stream_state.is_answering = false;
-        println!("\n");
+        print_content(stream_state, content_chunk);
     }
 
     if let Some(finish_reason) = json["choices"][0].get("finish_reason").and_then(Value::as_str) {
         stream_state.finish_reason = Some(finish_reason.to_string());
+        end_thinking(stream_state);
+        println!("");
     }
 
     // OpenAI streams each tool call as fragments: the first carries
@@ -186,6 +181,7 @@ impl Backend {
     pub fn process_line(&self, stream_state: &mut StreamState, line: &str) -> Result<(), serde_json::Error> {
         match self {
             Backend::Ollama => {
+                //println!("\x1b[33m {}", &line);
                 let json = from_str::<Value>(&line)?;
                 process_json_ollama(stream_state, &json);
                 Ok(())
