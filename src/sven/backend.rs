@@ -34,7 +34,9 @@ fn end_thinking(stream_state: &mut StreamState) {
 fn end_content(stream_state: &mut StreamState) {
     if stream_state.is_answering {
         stream_state.is_answering = false;
-        println!("");
+        if ! stream_state.content.ends_with("\n") {
+            println!("");
+        }
     }
 }
 
@@ -44,6 +46,8 @@ fn print_thinking(backend: &Backend, stream_state: &mut StreamState, chunk: &str
             stream_state.is_thinking = true;
             print!("\n{}", term::thinking(&backend));
         }
+
+        stream_state.thinking.push_str(chunk);
         print!("{}", chunk);
     }
 }
@@ -118,7 +122,11 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
         stream_state.finish_reason = Some(finish_reason.to_string());
         end_thinking(stream_state);
         end_content(stream_state);
-        println!("");
+        if !(stream_state.content.is_empty() && stream_state.thinking.is_empty()) {
+            if ! stream_state.content.ends_with("\n") {
+                println!("");
+            }
+        }
     }
 
     // OpenAI streams each tool call as fragments: the first carries

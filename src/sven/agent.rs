@@ -22,6 +22,7 @@ const MAX_TOOL_OUTPUT: usize = 10_000;
 #[derive(Default)]
 pub struct StreamState {
     pub content: String,
+    pub thinking: String,
     pub tool_calls: Vec<Value>,
     /// OpenAI streams each tool call as fragments keyed by `index`; they
     /// are merged here while the stream runs and moved into `tool_calls`
