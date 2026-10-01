@@ -31,6 +31,13 @@ fn end_thinking(stream_state: &mut StreamState) {
     }
 }
 
+fn end_content(stream_state: &mut StreamState) {
+    if stream_state.is_answering {
+        stream_state.is_answering = false;
+        println!("");
+    }
+}
+
 fn print_thinking(backend: &Backend, stream_state: &mut StreamState, chunk: &str) {
     if !chunk.is_empty() {
         if !stream_state.is_thinking {
@@ -53,12 +60,6 @@ fn print_content(stream_state: &mut StreamState, chunk: &str) {
         stream_state.content.push_str(chunk);
         print!("{}", chunk);
     }
-    else {
-        if stream_state.is_answering {
-            stream_state.is_answering = false;
-            println!("");
-        }
-    }
 }
 
 fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
@@ -72,6 +73,7 @@ fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
 
     if json["done"].as_bool() == Some(true) {
         end_thinking(stream_state);
+        end_content(stream_state);
     }
 
     if
@@ -115,6 +117,7 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
     if let Some(finish_reason) = json["choices"][0].get("finish_reason").and_then(Value::as_str) {
         stream_state.finish_reason = Some(finish_reason.to_string());
         end_thinking(stream_state);
+        end_content(stream_state);
         println!("");
     }
 
@@ -179,15 +182,14 @@ impl Backend {
     }
 
     pub fn process_line(&self, stream_state: &mut StreamState, line: &str) -> Result<(), serde_json::Error> {
+        //println!("\x1b[33m {}\x1b[0m", &line);
         match self {
             Backend::Ollama => {
-                //println!("\x1b[33m {}", &line);
                 let json = from_str::<Value>(&line)?;
                 process_json_ollama(stream_state, &json);
                 Ok(())
             },
             Backend::OpenAI | Backend::Vllm => {
-                //println!("\x1b[33m {}", &line);
                 if line.eq("data: [DONE]") {
                     return Ok(());
                 }
