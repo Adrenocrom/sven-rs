@@ -8,7 +8,8 @@ use crate::sven::tools::subprocess;
 
 #[derive(Deserialize, Debug, JsonSchema)]
 enum Language {
-    Rust
+    Rust,
+    UefiRust
 }
 #[derive(Deserialize, Debug, JsonSchema)]
 struct CompileToolParams {
@@ -21,8 +22,17 @@ fn compile_rust() -> Result<String, Box<dyn std::error::Error>> {
     Ok(subprocess::run(&mut command)?)
 }
 
+fn compile_uefi_rust() -> Result<String, Box<dyn std::error::Error>> {
+    let mut command = Command::new("cargo");
+    command.arg("build");
+    command.arg("--release");
+    command.arg("--target=x86_64-unknown-uefi");
+    Ok(subprocess::run(&mut command)?)
+}
+
 tool!(CompileTool, CompileToolParams, "Compile to check for errors.", execute(args) {
     match args.language {
         Language::Rust => return Ok(compile_rust()?),
+        Language::UefiRust => return Ok(compile_uefi_rust()?),
     }
 });
