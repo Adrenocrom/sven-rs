@@ -68,6 +68,13 @@ if the file is missing or invalid:
   "options": {
     "temperature": 0.1,
     "num_ctx": 32000
+  },
+  "mcp_servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "…"}
+    }
   }
 }
 ```
@@ -130,6 +137,54 @@ It is only sent for the OpenAI-compatible backends (`openai`, `vllm`) as
 `sven.json` means it cannot leak through file reads, backups or dotfile
 syncs.
 
+### MCP servers
+
+sven-rs is an MCP **client**: every server listed under `mcp_servers` in
+`sven.json` is connected at startup, and each tool it reports is registered
+like a built-in tool, named `mcp__<server>__<tool>`. The implementation is
+hand-rolled JSON-RPC 2.0 — no SDK, no extra dependencies — and supports the
+two current transports:
+
+| Transport | Config fields                                        | Notes |
+| --------- | ---------------------------------------------------- | ----- |
+| stdio     | `command`, `args`, `env`                             | The server runs as a child process for the whole session; `env` adds to the inherited environment. |
+| Streamable HTTP | `url`, `headers`                                | One POST per message via `curl`; `headers` can carry e.g. `Authorization`. |
+
+```json
+{
+  "mcp_servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "ghp_…"}
+    },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {"Authorization": "Bearer …"}
+    }
+  }
+}
+```
+
+Behavior worth knowing:
+
+- A server that cannot be started or reached is reported on stderr and
+  skipped — it does not stop the agent.
+- `initialize` and `tools/list` get 120 s (package managers like `npx`/`uvx`
+  download on first start), a `tools/call` gets 60 s; a hung server cannot
+  freeze the agent.
+- Requests the server sends *to* sven (sampling, roots, elicitation) are
+  refused with a JSON-RPC error — sven supports none of them, and refusing
+  keeps a waiting server from hanging.
+- Tool results are rendered as text for the model; binary content (images,
+  audio) becomes a placeholder instead of a base64 flood, and `isError`
+  results become tool errors.
+- An HTTP server that terminated the session (it answers 404, and may do so
+  at any time — restart, idle timeout) is re-initialized transparently and
+  the failed request retried once.
+- The deprecated HTTP+SSE transport (a GET stream before the first POST) is
+  not supported.
+
 ## Tools
 
 | Tool                   | What it does                                        |
@@ -151,6 +206,7 @@ syncs.
 | `AddSkillTool`         | Store new knowledge as a skill                      |
 | `UpdateSkillTool`      | Update a skill's description, tags and/or body      |
 | `RemoveSkillTool`      | Remove a skill and its directory                    |
+| `mcp__<server>__<tool>` | Any tool of a configured MCP server (see above)     |
 
 ## Skills
 
@@ -181,6 +237,13 @@ path-confinement check used by the file tools.
   prefixed with `./` or passed after the `--` end-of-options marker, and
   man page names, which never legitimately start with `-`, are rejected.
 - **Network:** `WebFetch` only accepts `http://` and `https://` URLs.
+- **MCP:** the HTTP transport accepts only `http://`/`https://` URLs and
+  rejects header names containing `:` or control characters (a crafted
+  header could smuggle a second header line into the request). stdio
+  servers run with explicit argv — no shell — and inherit the
+  environment plus the configured `env` entries. MCP tools are remote
+  code by definition: they run whatever the server implements, so only
+  list servers you trust.
 
 ## Architecture
 
@@ -192,6 +255,9 @@ path-confinement check used by the file tools.
   endpoint, wire format and stream parsing per server protocol.
 - `src/sven/chat_history.rs` — conversation history sent with each request.
 - `src/sven/config.rs` — config file loading (`SvenConfig::load()`).
+- `src/sven/mcp/` — the MCP client: JSON-RPC 2.0 over stdio (child
+  process) or Streamable HTTP (one `curl` POST per message), plus the
+  `Tool` wrapper that exposes remote tools as `mcp__<server>__<tool>`.
 - `src/sven/tool.rs` + `tool_registry.rs` — the `Tool` trait and a registry
   that generates JSON-schema tool definitions for the model.
 - `src/sven/macros.rs` — the `tool!` macro; every tool is defined with it.

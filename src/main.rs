@@ -6,6 +6,7 @@ use clap::Parser;
 
 use crate::sven::backend::Backend;
 use crate::sven::config::SvenConfig;
+use crate::sven::mcp;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::tools::compile_tool::CompileTool;
@@ -68,6 +69,13 @@ fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     registry.register(Box::new(SearchSkillsTool));
     registry.register(Box::new(GetSkillTool));
     registry.register(Box::new(CompileTool));
+
+    // MCP servers from the config: connect, list their tools, and
+    // register each one like a built-in tool. A server that cannot be
+    // reached is reported on stderr and skipped.
+    for tool in mcp::discover(&config.mcp_servers) {
+        registry.register(Box::new(tool));
+    }
 
     Agent::new(AgentConfig {
         host: config.host,

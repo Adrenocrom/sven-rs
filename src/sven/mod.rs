@@ -3,6 +3,7 @@ pub mod agent;
 pub mod chat_history;
 pub mod config;
 pub mod macros;
+pub mod mcp;
 pub mod security;
 pub mod security_error;
 pub mod skills;
