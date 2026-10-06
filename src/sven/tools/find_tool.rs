@@ -1,4 +1,4 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -32,5 +32,5 @@ tool!(FindTool, FindToolParams, "Search for files whose names match *pattern*.",
     command.arg("-not");
     command.arg("-path");
     command.arg("./.git/*");
-    Ok(subprocess::run(&mut command)?.trim().to_string())
+    Ok(subprocess::run(&mut command).await?.trim().to_string())
 });

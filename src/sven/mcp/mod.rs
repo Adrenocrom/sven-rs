@@ -7,10 +7,11 @@ pub mod transport;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::sven::config::McpServerConfig;
 use crate::sven::mcp::transport::{
@@ -60,7 +61,7 @@ pub struct McpClient {
 impl McpClient {
     /// Build the transport the config asks for and run the `initialize`
     /// handshake.
-    pub fn connect(name: &str, config: &McpServerConfig) -> Result<Self, Box<dyn Error>> {
+    pub async fn connect(name: &str, config: &McpServerConfig) -> Result<Self, Box<dyn Error>> {
         let transport: Box<dyn Transport> = match (&config.command, &config.url) {
             (Some(_), Some(_)) => {
                 return Err("an MCP server needs either 'command' or 'url', not both".into());
@@ -74,7 +75,7 @@ impl McpClient {
             }
         };
         let mut client = Self::with_transport(name, transport);
-        client.initialize()?;
+        client.initialize().await?;
         Ok(client)
     }
 
@@ -94,18 +95,20 @@ impl McpClient {
     /// It goes through `request_once`, not `request`: the retry wrapper
     /// re-initializes on `SessionExpired`, so an initialize that itself
     /// hit a session expiry would recurse forever.
-    pub fn initialize(&mut self) -> Result<(), Box<dyn Error>> {
-        let result = self.request_once(
-            "initialize",
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                // sven supports no server→client capabilities (no
-                // sampling, no roots, no elicitation)
-                "capabilities": {},
-                "clientInfo": {"name": "sven-rs", "version": env!("CARGO_PKG_VERSION")}
-            }),
-            HANDSHAKE_TIMEOUT,
-        )?;
+    pub async fn initialize(&mut self) -> Result<(), Box<dyn Error>> {
+        let result = self
+            .request_once(
+                "initialize",
+                json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    // sven supports no server→client capabilities (no
+                    // sampling, no roots, no elicitation)
+                    "capabilities": {},
+                    "clientInfo": {"name": "sven-rs", "version": env!("CARGO_PKG_VERSION")}
+                }),
+                HANDSHAKE_TIMEOUT,
+            )
+            .await?;
         if let Some(version) = result.get("protocolVersion").and_then(Value::as_str) {
             if version != PROTOCOL_VERSION {
                 eprintln!(
@@ -115,12 +118,12 @@ impl McpClient {
             }
             self.transport.negotiated(version);
         }
-        self.notify("notifications/initialized");
+        self.notify("notifications/initialized").await;
         Ok(())
     }
 
     /// All tools the server offers, following `nextCursor` pagination.
-    pub fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, Box<dyn Error>> {
+    pub async fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, Box<dyn Error>> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
         let mut seen = BTreeSet::new();
@@ -129,7 +132,7 @@ impl McpClient {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let result = self.request("tools/list", params, HANDSHAKE_TIMEOUT)?;
+            let result = self.request("tools/list", params, HANDSHAKE_TIMEOUT).await?;
             for entry in result
                 .get("tools")
                 .and_then(Value::as_array)
@@ -163,22 +166,25 @@ impl McpClient {
     }
 
     /// Call one remote tool and render its result as text for the model.
-    pub fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<String, Box<dyn Error>> {
-        let result = self.request(
-            "tools/call",
-            json!({"name": tool, "arguments": arguments}),
-            CALL_TIMEOUT,
-        )?;
+    pub async fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<String, Box<dyn Error>> {
+        let result = self
+            .request(
+                "tools/call",
+                json!({"name": tool, "arguments": arguments}),
+                CALL_TIMEOUT,
+            )
+            .await?;
         format_tool_result(&result)
     }
 
     /// Send a notification. It gets no answer, so a failure is only
     /// reported — the next request would fail too if the connection
     /// were really broken.
-    fn notify(&mut self, method: &str) {
-        if let Err(e) =
-            self.transport
-                .send(&json!({"jsonrpc": "2.0", "method": method}), NOTIFICATION_TIMEOUT)
+    async fn notify(&mut self, method: &str) {
+        if let Err(e) = self
+            .transport
+            .send(&json!({"jsonrpc": "2.0", "method": method}), NOTIFICATION_TIMEOUT)
+            .await
         {
             eprintln!("mcp '{}': could not send '{}': {}", self.server, method, e);
         }
@@ -190,30 +196,38 @@ impl McpClient {
     /// `initialize` runs again and the request is retried once on the
     /// new session. The tool registry is not refreshed afterwards —
     /// the tool set stays as discovered at startup.
-    fn request(
+    async fn request(
         &mut self,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value, Box<dyn Error>> {
-        match self.request_once(method, params.clone(), timeout) {
+        match self.request_once(method, params.clone(), timeout).await {
+            // The session expired mid-conversation: re-establish it and
+            // retry once. The error is consumed by this arm — printed,
+            // then dropped when the arm ends. A `Box<dyn Error>` is
+            // !Send; holding it (or the match scrutinee) across the
+            // awaits below would make this future !Send, and the tool
+            // futures must be Send.
             Err(e) if e.downcast_ref::<SessionExpired>().is_some() => {
                 eprintln!(
                     "mcp '{}': {}; starting a new session and retrying once",
                     self.server, e
                 );
-                self.initialize()?;
-                self.request_once(method, params, timeout)
             }
-            result => result,
+            // every other outcome — success or an ordinary failure —
+            // goes straight back to the caller
+            result => return result,
         }
+        self.initialize().await?;
+        self.request_once(method, params, timeout).await
     }
 
     /// One request/response exchange, without retry. Requests the
     /// server sends while we wait are refused (sven supports none of
     /// them), notifications are dropped — both per the JSON-RPC rules,
     /// so a server never hangs waiting for us.
-    fn request_once(
+    async fn request_once(
         &mut self,
         method: &str,
         params: Value,
@@ -221,10 +235,14 @@ impl McpClient {
     ) -> Result<Value, Box<dyn Error>> {
         self.next_id += 1;
         let id = self.next_id;
-        if let Err(e) = self.transport.send(
-            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
-            timeout,
-        ) {
+        if let Err(e) = self
+            .transport
+            .send(
+                &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+                timeout,
+            )
+            .await
+        {
             // SessionExpired must reach `request` unchanged — it is what
             // triggers the re-initialize there; every other error gets
             // the server name prefixed.
@@ -247,6 +265,7 @@ impl McpClient {
             let message = self
                 .transport
                 .recv(remaining)
+                .await
                 .map_err(|e| format!("mcp server '{}': {}", self.server, e))?;
             let Some(message) = message else {
                 return Err(format!(
@@ -265,17 +284,21 @@ impl McpClient {
                 MessageKind::Request(request_id) => {
                     // refusing instead of ignoring: a server waiting for
                     // a sampling or roots answer would otherwise hang
-                    if let Err(e) = self.transport.send(
-                        &json!({
-                            "jsonrpc": "2.0",
-                            "id": request_id,
-                            "error": {
-                                "code": -32601,
-                                "message": "sven supports no server-to-client requests"
-                            }
-                        }),
-                        timeout,
-                    ) {
+                    if let Err(e) = self
+                        .transport
+                        .send(
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": "sven supports no server-to-client requests"
+                                }
+                            }),
+                            timeout,
+                        )
+                        .await
+                    {
                         // SessionExpired must stay unwrapped so `request`
                         // can re-initialize; the dead session cannot
                         // answer the main request either
@@ -393,10 +416,14 @@ fn jsonrpc_error(server: &str, error: &Value) -> Box<dyn Error> {
 /// Connect to every configured MCP server and wrap its tools. A server
 /// that cannot be reached is reported on stderr and skipped — one
 /// broken server must not take the whole agent down.
-pub fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
+///
+/// The lock is tokio's, not std's: a std `MutexGuard` held across the
+/// `.await`s inside `call_tool` is `!Send` and would break the `+ Send`
+/// futures `Tool::execute` returns.
+pub async fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
     let mut tools = Vec::new();
     for (name, config) in servers {
-        let client = match McpClient::connect(name, config) {
+        let client = match McpClient::connect(name, config).await {
             Ok(client) => client,
             Err(e) => {
                 eprintln!("mcp: could not connect to '{}': {}\n", name, e);
@@ -404,11 +431,7 @@ pub fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
             }
         };
         let client = Arc::new(Mutex::new(client));
-        let infos = match client
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .list_tools()
-        {
+        let infos = match client.lock().await.list_tools().await {
             Ok(infos) => infos,
             Err(e) => {
                 eprintln!("mcp: '{}' connected but tools/list failed: {}\n", name, e);
@@ -430,8 +453,8 @@ mod tests {
 
     /// A client over a scripted mock, plus the shared state to inspect
     /// what was sent.
-    fn mock_client(incoming: Vec<Value>) -> (Arc<Mutex<MockState>>, McpClient) {
-        let state = Arc::new(Mutex::new(MockState {
+    fn mock_client(incoming: Vec<Value>) -> (Arc<std::sync::Mutex<MockState>>, McpClient) {
+        let state = Arc::new(std::sync::Mutex::new(MockState {
             incoming: incoming.into(),
             ..Default::default()
         }));
@@ -448,8 +471,8 @@ mod tests {
         json!({"jsonrpc": "2.0", "id": id, "result": result})
     }
 
-    #[test]
-    fn initializes_lists_and_calls_tools() {
+    #[tokio::test]
+    async fn initializes_lists_and_calls_tools() {
         let (state, mut client) = mock_client(vec![
             answer(
                 1,
@@ -474,20 +497,20 @@ mod tests {
             answer(4, json!({"content": [{"type": "text", "text": "pong"}]})),
         ]);
 
-        client.initialize().unwrap();
+        client.initialize().await.unwrap();
         assert_eq!(
             state.lock().unwrap().negotiated.as_deref(),
             Some(PROTOCOL_VERSION)
         );
 
-        let tools = client.list_tools().unwrap();
+        let tools = client.list_tools().await.unwrap();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[1].description, "");
         assert_eq!(tools[1].input_schema, json!({"type": "object", "properties": {}}));
 
         assert_eq!(
-            client.call_tool("echo", json!({"text": "hi"})).unwrap(),
+            client.call_tool("echo", json!({"text": "hi"})).await.unwrap(),
             "pong"
         );
 
@@ -515,8 +538,8 @@ mod tests {
         assert_eq!(sent[4]["params"]["name"], json!("echo"));
     }
 
-    #[test]
-    fn a_terminated_session_is_reinitialized_and_the_call_retried() {
+    #[tokio::test]
+    async fn a_terminated_session_is_reinitialized_and_the_call_retried() {
         let (state, mut client) = mock_client(vec![
             answer(1, json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}})),
             // after the 404: the new initialize (id 3) and the retried
@@ -524,12 +547,12 @@ mod tests {
             answer(3, json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}})),
             answer(4, json!({"content": [{"type": "text", "text": "again"}]})),
         ]);
-        client.initialize().unwrap();
+        client.initialize().await.unwrap();
         // the next request is answered with HTTP 404: session over
         state.lock().unwrap().session_expired_once = true;
 
         assert_eq!(
-            client.call_tool("echo", json!({"text": "hi"})).unwrap(),
+            client.call_tool("echo", json!({"text": "hi"})).await.unwrap(),
             "again"
         );
 
@@ -552,16 +575,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refuses_server_requests_instead_of_hanging() {
+    #[tokio::test]
+    async fn refuses_server_requests_instead_of_hanging() {
         let (state, mut client) = mock_client(vec![
             answer(1, json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}})),
             // a server→client request arrives while tools/list is pending
             json!({"jsonrpc": "2.0", "id": 77, "method": "sampling/createMessage", "params": {}}),
             answer(2, json!({"tools": []})),
         ]);
-        client.initialize().unwrap();
-        assert_eq!(client.list_tools().unwrap().len(), 0);
+        client.initialize().await.unwrap();
+        assert_eq!(client.list_tools().await.unwrap().len(), 0);
         let sent = state.lock().unwrap().sent.clone();
         let refusal = sent
             .iter()
@@ -570,26 +593,26 @@ mod tests {
         assert_eq!(refusal["error"]["code"], json!(-32601));
     }
 
-    #[test]
-    fn jsonrpc_errors_become_errors() {
+    #[tokio::test]
+    async fn jsonrpc_errors_become_errors() {
         let (_, mut client) = mock_client(vec![
             answer(1, json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}})),
             json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "no tools for you"}}),
         ]);
-        client.initialize().unwrap();
-        let error = client.list_tools().unwrap_err().to_string();
+        client.initialize().await.unwrap();
+        let error = client.list_tools().await.unwrap_err().to_string();
         assert!(error.contains("no tools for you"), "{}", error);
         assert!(error.contains("mock"), "{}", error);
     }
 
-    #[test]
-    fn a_closed_connection_is_reported() {
+    #[tokio::test]
+    async fn a_closed_connection_is_reported() {
         let (_, mut client) = mock_client(vec![answer(
             1,
             json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}}),
         )]);
-        client.initialize().unwrap();
-        let error = client.list_tools().unwrap_err().to_string();
+        client.initialize().await.unwrap();
+        let error = client.list_tools().await.unwrap_err().to_string();
         assert!(error.contains("closed"), "{}", error);
     }
 

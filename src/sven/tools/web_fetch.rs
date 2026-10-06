@@ -19,6 +19,11 @@ tool!(WebFetch, WebFetchParams, "Does a GET request to a specified URL.", execut
         return Err(format!("unsupported URL scheme (only http/https): {}", args.url).into());
     }
 
+    // curl is spawned with std::process so its stdout stays a plain std
+    // handle — that is what `Stdio::from` needs to wire it to pandoc's
+    // stdin; tokio's ChildStdout cannot be converted back. pandoc is
+    // spawned with tokio and awaited, so the long part of the fetch
+    // (curl downloading, pandoc converting) never blocks a worker.
     let mut curl = Command::new("curl")
         .arg("--silent")
         .arg("--show-error")
@@ -36,7 +41,7 @@ tool!(WebFetch, WebFetchParams, "Does a GET request to a specified URL.", execut
         .take()
         .ok_or_else(|| "curl stdout was not piped".to_string())?;
 
-    let pandoc = Command::new("pandoc")
+    let pandoc = tokio::process::Command::new("pandoc")
         .arg("-f")
         .arg("html")
         .arg("-t")
@@ -44,10 +49,11 @@ tool!(WebFetch, WebFetchParams, "Does a GET request to a specified URL.", execut
         .stdin(Stdio::from(curl_stdout))
         .stdout(Stdio::piped())
         .spawn()?;
-    let pandoc_output = pandoc.wait_with_output()?;
+    let pandoc_output = pandoc.wait_with_output().await?;
 
     // Waiting for pandoc first cannot deadlock: pandoc keeps draining
-    // curl's stdout, and its EOF means curl has already exited.
+    // curl's stdout, and its EOF means curl has already exited — so the
+    // blocking wait below returns immediately, it only reaps the status.
     let curl_output = curl.wait_with_output()?;
     if !curl_output.status.success() {
         return Err(format!(

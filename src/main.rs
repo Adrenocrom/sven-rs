@@ -54,7 +54,7 @@ struct Args {
     config_dir: Option<String>,
 }
 
-fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
+async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     let mut registry: ToolRegistry = ToolRegistry::new();
     registry.register(Box::new(TimeTool));
     registry.register(Box::new(ListFiles));
@@ -77,7 +77,7 @@ fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     // MCP servers from the config: connect, list their tools, and
     // register each one like a built-in tool. A server that cannot be
     // reached is reported on stderr and skipped.
-    for tool in mcp::discover(&config.mcp_servers) {
+    for tool in mcp::discover(&config.mcp_servers).await {
         registry.register(Box::new(tool));
     }
 
@@ -157,7 +157,7 @@ async fn main() {
     // The API key never goes in the config file — it is read from the
     // environment so it cannot leak through file reads or backups.
     let api_key = std::env::var("SVEN_API_KEY").ok().filter(|key| !key.is_empty());
-    let mut agent = build_agent(config.clone(), api_key);
+    let mut agent = build_agent(config.clone(), api_key).await;
 
     if let Some(end_of_prompt) = &args.end_of_prompt {
         // non-interactive mode: process prompts from stdin until EOF

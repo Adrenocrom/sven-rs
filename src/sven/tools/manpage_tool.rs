@@ -1,4 +1,4 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -19,5 +19,5 @@ tool!(ManPageTool, ManPageToolParams, "Displays the first page of a manual page.
     }
     let mut command = Command::new("man");
     command.arg(args.name);
-    Ok(subprocess::run(&mut command)?)
+    Ok(subprocess::run(&mut command).await?)
 });

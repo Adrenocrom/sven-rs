@@ -181,7 +181,7 @@ impl Agent {
                         continue;
                     }
                 };
-                let result = self.process_tool_call(&tool_name, tool_params);
+                let result = self.process_tool_call(&tool_name, tool_params).await;
                 self.history.tool(&result, &tool_name, tool_call_id.as_deref());
             }
         }
@@ -282,11 +282,11 @@ impl Agent {
 
     /// Execute one tool call and return the result for the history,
     /// truncated to `MAX_TOOL_OUTPUT` characters.
-    pub fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
+    pub async fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
                 println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), params);
-                match tool.execute(params) {
+                match tool.execute(params).await {
                     Ok(result) => result,
                     Err(err) => {
                         println!("    {}", term::red(&format!("ERROR: {}", err)));

@@ -1,3 +1,6 @@
+// `execute` returns a boxed future (see `tool.rs`): native `async fn`
+// in traits is not dyn-compatible, so the macro performs the same
+// desugaring the `async-trait` crate would — without the dependency.
 macro_rules! tool {
     (
         $tool:ident, $params:ident, $desc:literal,
@@ -12,9 +15,11 @@ macro_rules! tool {
                 schema.remove("$schema");
                 Some(serde_json::json!(schema))
             }
-            fn execute(&self, params: serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
-                let $args: $params = serde_json::from_value(params)?;
-                $($body)*
+            fn execute<'a>(&'a self, params: serde_json::Value) -> crate::sven::tool::ToolFuture<'a> {
+                Box::pin(async move {
+                    let $args: $params = serde_json::from_value(params)?;
+                    $($body)*
+                })
             }
         }
     };
@@ -30,8 +35,8 @@ macro_rules! tool {
             fn params(&self) -> Option<serde_json::Value> {
                 None
             }
-            fn execute(&self, _params: serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
-                $($body)*
+            fn execute<'a>(&'a self, _params: serde_json::Value) -> crate::sven::tool::ToolFuture<'a> {
+                Box::pin(async move { $($body)* })
             }
         }
     };

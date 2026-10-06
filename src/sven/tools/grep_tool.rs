@@ -1,4 +1,4 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -27,5 +27,5 @@ tool!(GrepTool, GrepToolParams, "Search for a regex pattern recursively in the c
     } else {
         command.arg(".");
     }
-    Ok(subprocess::run(&mut command)?)
+    Ok(subprocess::run(&mut command).await?)
 });

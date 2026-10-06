@@ -149,7 +149,7 @@ two current transports:
 | Transport | Config fields                                        | Notes |
 | --------- | ---------------------------------------------------- | ----- |
 | stdio     | `command`, `args`, `env`                             | The server runs as a child process for the whole session; `env` adds to the inherited environment. |
-| Streamable HTTP | `url`, `headers`                                | One POST per message via `curl`; `headers` can carry e.g. `Authorization`. |
+| Streamable HTTP | `url`, `headers`                                | One POST per message via `reqwest`; `headers` can carry e.g. `Authorization`. |
 
 ```json
 {
@@ -257,7 +257,7 @@ path-confinement check used by the file tools.
 - `src/sven/chat_history.rs` — conversation history sent with each request.
 - `src/sven/config.rs` — config file loading (`SvenConfig::load()`).
 - `src/sven/mcp/` — the MCP client: JSON-RPC 2.0 over stdio (child
-  process) or Streamable HTTP (one `curl` POST per message), plus the
+  process) or Streamable HTTP (one `reqwest` POST per message), plus the
   `Tool` wrapper that exposes remote tools as `mcp__<server>__<tool>`.
 - `src/sven/tool.rs` + `tool_registry.rs` — the `Tool` trait and a registry
   that generates JSON-schema tool definitions for the model.

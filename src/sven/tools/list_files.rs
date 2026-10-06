@@ -1,4 +1,4 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -21,5 +21,5 @@ tool!(ListFiles, ListFilesParams, "List files in current directory", execute(arg
         command.arg("--");
         command.arg(path);
     }
-    Ok(subprocess::run(&mut command)?)
+    Ok(subprocess::run(&mut command).await?)
 });

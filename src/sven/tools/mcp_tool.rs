@@ -1,11 +1,12 @@
 //! The `Tool` wrapper that exposes one remote MCP tool to the model.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::sven::mcp::{McpClient, McpToolInfo};
-use crate::sven::tool::Tool;
+use crate::sven::tool::{Tool, ToolFuture};
 
 /// The name under which the model sees a remote tool. The `mcp__` prefix
 /// plus server and tool name keeps MCP tools from colliding with each
@@ -22,6 +23,9 @@ pub struct McpTool {
     /// All tools of one server share a single connection. The agent runs
     /// tool calls one at a time, so the lock is never contended in
     /// practice; it exists because `Tool::execute` takes `&self`.
+    ///
+    /// Tokio's, not std's: the guard is held across the `.await`s of
+    /// `call_tool`, and a std guard would make the future `!Send`.
     client: Arc<Mutex<McpClient>>,
 }
 
@@ -60,14 +64,13 @@ impl Tool for McpTool {
         Some(self.input_schema.clone())
     }
 
-    fn execute(&self, params: Value) -> Result<String, Box<dyn std::error::Error>> {
-        // a poisoned lock means an earlier call panicked mid-request; the
-        // connection itself is still fine, so the lock is recovered
-        let mut client = self
-            .client
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        client.call_tool(&self.tool, params)
+    fn execute<'a>(&'a self, params: Value) -> ToolFuture<'a> {
+        Box::pin(async move {
+            // tokio's lock has no poisoning — a panic in another task
+            // leaves the mutex usable
+            let mut client = self.client.lock().await;
+            client.call_tool(&self.tool, params).await
+        })
     }
 }
 
@@ -83,9 +86,9 @@ mod tests {
         assert_eq!(mcp_tool_name("github", "create_issue"), "mcp__github__create_issue");
     }
 
-    #[test]
-    fn exposes_the_remote_schema_and_calls_through() {
-        let state = Arc::new(Mutex::new(MockState {
+    #[tokio::test]
+    async fn exposes_the_remote_schema_and_calls_through() {
+        let state = Arc::new(std::sync::Mutex::new(MockState {
             incoming: VecDeque::from(vec![
                 json!({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "hello"}]}}),
             ]),
@@ -110,7 +113,7 @@ mod tests {
             tool.params(),
             Some(json!({"type": "object", "properties": {"text": {"type": "string"}}}))
         );
-        assert_eq!(tool.execute(json!({"text": "hi"})).unwrap(), "hello");
+        assert_eq!(tool.execute(json!({"text": "hi"})).await.unwrap(), "hello");
 
         // the call reached the remote tool under its own name
         let sent = state.lock().unwrap().sent.clone();

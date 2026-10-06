@@ -1,4 +1,4 @@
-use std::process::Command;
+use tokio::process::Command;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,5 +17,5 @@ tool!(WebSearch, WebSearchParams, "Search the web via DuckDuckGo. Use WebFetch f
     // end-of-options marker: the query is a keyword list, never options
     command.arg("--");
     command.arg(args.query);
-    Ok(subprocess::run(&mut command)?)
+    Ok(subprocess::run(&mut command).await?)
 });
