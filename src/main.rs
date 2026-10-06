@@ -6,6 +6,7 @@ use clap::Parser;
 
 use crate::sven::backend::Backend;
 use crate::sven::config::SvenConfig;
+use crate::sven::mcp;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::tools::compile_tool::CompileTool;
@@ -47,6 +48,10 @@ struct Args {
     /// override the host from the config file
     #[arg(long)]
     host: Option<String>,
+
+    /// load sven.json from this directory instead of ~/.config/sven
+    #[arg(long)]
+    config_dir: Option<String>,
 }
 
 fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
@@ -68,6 +73,13 @@ fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     registry.register(Box::new(SearchSkillsTool));
     registry.register(Box::new(GetSkillTool));
     registry.register(Box::new(CompileTool));
+
+    // MCP servers from the config: connect, list their tools, and
+    // register each one like a built-in tool. A server that cannot be
+    // reached is reported on stderr and skipped.
+    for tool in mcp::discover(&config.mcp_servers) {
+        registry.register(Box::new(tool));
+    }
 
     Agent::new(AgentConfig {
         host: config.host,
@@ -127,7 +139,7 @@ fn print_header(config: &SvenConfig) {
 async fn main() {
     let args = Args::parse();
 
-    let mut config = SvenConfig::load();
+    let mut config = SvenConfig::load(args.config_dir.as_deref());
     // CLI flags override the config file; anything not given falls back
     // to what `sven.json` says (or the built-in defaults).
     if let Some(backend) = args.backend {

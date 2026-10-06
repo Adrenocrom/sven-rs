@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::Path;
 
@@ -26,6 +27,25 @@ impl Default for ChatOptions {
     }
 }
 
+/// One MCP server entry from `sven.json`.
+///
+/// `command` (+ `args`, `env`) selects the stdio transport, `url` the
+/// Streamable HTTP one; exactly one of them must be set. `env` adds to
+/// the inherited environment, it does not replace it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct McpServerConfig {
+    /// Executable to run (stdio transport).
+    pub command: Option<String>,
+    /// Arguments for `command`.
+    pub args: Option<Vec<String>>,
+    /// Extra environment variables for `command`.
+    pub env: Option<BTreeMap<String, String>>,
+    /// Server URL (Streamable HTTP transport).
+    pub url: Option<String>,
+    /// Extra HTTP headers, e.g. `Authorization`.
+    pub headers: Option<BTreeMap<String, String>>,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct SvenConfig {
@@ -35,6 +55,9 @@ pub struct SvenConfig {
     pub host: String,
     pub system_prompt: String,
     pub options: ChatOptions,
+    /// MCP servers to connect to at startup; the key is the server name
+    /// used in the tool names (`mcp__<name>__<tool>`).
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
 }
 
 impl Default for SvenConfig {
@@ -45,21 +68,29 @@ impl Default for SvenConfig {
             host: "http://localhost:11434".to_string(),
             system_prompt: "".to_string(),
             options: ChatOptions::default(),
-            backend: Backend::Ollama
+            backend: Backend::Ollama,
+            mcp_servers: BTreeMap::new(),
         }
     }
 }
 
 impl SvenConfig {
-    /// Load `~/.config/sven/sven.json`. Missing fields — or a missing file
-    /// — fall back to the defaults field by field; a file that exists but
-    /// cannot be read or parsed is reported on stderr.
-    pub fn load() -> SvenConfig {
-        let Some(home) = std::env::var_os("HOME") else {
-            eprintln!("HOME is not set; using default config");
-            return SvenConfig::default();
+    /// Load `sven.json` from `dir`, or from `~/.config/sven` when `dir` is
+    /// `None`. Missing fields — or a missing file — fall back to the
+    /// defaults field by field; a file that exists but cannot be read or
+    /// parsed is reported on stderr.
+    pub fn load(dir: Option<&str>) -> SvenConfig {
+        let path = match dir {
+            // `~` in a CLI-supplied directory is expanded like in `data_dir`
+            Some(dir) => crate::sven::skills::expand_tilde(dir).join("sven.json"),
+            None => {
+                let Some(home) = std::env::var_os("HOME") else {
+                    eprintln!("HOME is not set; using default config");
+                    return SvenConfig::default();
+                };
+                Path::new(&home).join(".config").join("sven").join("sven.json")
+            }
         };
-        let path = Path::new(&home).join(".config").join("sven").join("sven.json");
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             // no config file yet — the defaults are not an error
