@@ -36,6 +36,7 @@ cargo run --release -- --backend vllm --model Qwen/Qwen2.5-7B-Instruct --host ht
 | `--host`    | Server root URL                                 |
 | `--prompt`  | REPL prompt prefix (default `>> `)              |
 | `--end-of-prompt` | Non-interactive mode: read stdin until the marker |
+| `--config-dir` | Directory to load `sven.json` from (default `~/.config/sven`) |
 
 Flags override the config file; anything not given falls back to `sven.json`
 (or the built-in defaults).

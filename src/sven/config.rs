@@ -75,15 +75,22 @@ impl Default for SvenConfig {
 }
 
 impl SvenConfig {
-    /// Load `~/.config/sven/sven.json`. Missing fields — or a missing file
-    /// — fall back to the defaults field by field; a file that exists but
-    /// cannot be read or parsed is reported on stderr.
-    pub fn load() -> SvenConfig {
-        let Some(home) = std::env::var_os("HOME") else {
-            eprintln!("HOME is not set; using default config");
-            return SvenConfig::default();
+    /// Load `sven.json` from `dir`, or from `~/.config/sven` when `dir` is
+    /// `None`. Missing fields — or a missing file — fall back to the
+    /// defaults field by field; a file that exists but cannot be read or
+    /// parsed is reported on stderr.
+    pub fn load(dir: Option<&str>) -> SvenConfig {
+        let path = match dir {
+            // `~` in a CLI-supplied directory is expanded like in `data_dir`
+            Some(dir) => crate::sven::skills::expand_tilde(dir).join("sven.json"),
+            None => {
+                let Some(home) = std::env::var_os("HOME") else {
+                    eprintln!("HOME is not set; using default config");
+                    return SvenConfig::default();
+                };
+                Path::new(&home).join(".config").join("sven").join("sven.json")
+            }
         };
-        let path = Path::new(&home).join(".config").join("sven").join("sven.json");
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             // no config file yet — the defaults are not an error
