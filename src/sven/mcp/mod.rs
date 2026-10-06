@@ -26,6 +26,7 @@ use crate::sven::tools::mcp_tool::McpTool;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// One tool of a server, as reported by `tools/list`.
+#[derive(Debug)]
 pub struct McpToolInfo {
     pub name: String,
     pub description: String,
@@ -398,7 +399,7 @@ pub fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
         let client = match McpClient::connect(name, config) {
             Ok(client) => client,
             Err(e) => {
-                eprintln!("mcp: could not connect to '{}': {}", name, e);
+                eprintln!("mcp: could not connect to '{}': {}\n", name, e);
                 continue;
             }
         };
@@ -410,11 +411,11 @@ pub fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
         {
             Ok(infos) => infos,
             Err(e) => {
-                eprintln!("mcp: '{}' connected but tools/list failed: {}", name, e);
+                eprintln!("mcp: '{}' connected but tools/list failed: {}\n", name, e);
                 continue;
             }
         };
-        println!("mcp: '{}' connected ({} tools)", name, infos.len());
+        println!("mcp: '{}' connected ({} tools) \n", name, infos.len());
         for info in &infos {
             tools.push(McpTool::new(name, info, Arc::clone(&client)));
         }
@@ -426,7 +427,6 @@ pub fn discover(servers: &BTreeMap<String, McpServerConfig>) -> Vec<McpTool> {
 mod tests {
     use super::*;
     use crate::sven::mcp::transport::{MockState, MockTransport};
-    use std::collections::VecDeque;
 
     /// A client over a scripted mock, plus the shared state to inspect
     /// what was sent.
