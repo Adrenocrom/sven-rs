@@ -11,7 +11,8 @@ enum Language {
     Rust,
     UefiRust,
     Java,
-    Dotnet
+    Dotnet,
+    Python
 }
 #[derive(Deserialize, Debug, JsonSchema)]
 struct CompileToolParams {
@@ -45,11 +46,21 @@ async fn compile_dotnet() -> Result<String, Box<dyn std::error::Error>> {
     Ok(subprocess::run(&mut command).await?)
 }
 
+async fn compile_python() -> Result<String, Box<dyn std::error::Error>> {
+    let mut command = Command::new("python");
+    command.arg("-m");
+    command.arg("compileall");
+    command.arg("-q");
+    command.arg(".");
+    Ok(subprocess::run(&mut command).await?)
+}
+
 tool!(CompileTool, CompileToolParams, "Compile to check for errors.", execute(args) {
     match args.language {
         Language::Rust => return Ok(compile_rust().await?),
         Language::UefiRust => return Ok(compile_uefi_rust().await?),
         Language::Java => return Ok(compile_java().await?),
         Language::Dotnet => return Ok(compile_dotnet().await?),
+        Language::Python => return Ok(compile_python().await?)
     }
 });
