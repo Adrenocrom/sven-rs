@@ -14,9 +14,9 @@ struct GrepToolParams {
     /// Directory or file to search in (default: current directory)
     path: Option<String>,
 }
-tool!(GrepTool, GrepToolParams, "Search for a regex pattern recursively in the current directory (or in the given path). Excludes target/ and .git.", execute(args) {
+tool!(GrepTool, GrepToolParams, "Search for an extended regex (ERE) pattern recursively in the current directory (or in the given path). Supports alternation like `foo|bar`. Excludes target/ and .git.", execute(args) {
     let mut command = Command::new("grep");
-    command.arg("-rni");
+    command.arg("-rniE");
     command.arg("--exclude-dir=target");
     command.arg("--exclude-dir=.git");
     command.arg("--");

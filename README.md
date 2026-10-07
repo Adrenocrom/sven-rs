@@ -195,7 +195,7 @@ Behavior worth knowing:
 | `ReadTool`             | Read a file, with optional offset and line count     |
 | `SearchAndReplaceTool` | Search-and-replace content in a file                |
 | `ReplaceFileTool`      | Overwrite a file (or create it if it doesn't exist)  |
-| `GrepTool`             | Recursive regex search                              |
+| `GrepTool`             | Recursive regex search (extended regex, `foo|bar` alternation) |
 | `FindTool`             | Find files matching a wildcard pattern              |
 | `ManPageTool`          | Display a man page                                  |
 | `WebSearch`            | DuckDuckGo search via `ddgr`                        |
