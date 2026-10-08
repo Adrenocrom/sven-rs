@@ -1,3 +1,4 @@
+pub mod git_tools;
 pub mod compile_tool;
 pub mod edit_tool;
 pub mod find_tool;

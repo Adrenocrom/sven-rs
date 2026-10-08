@@ -12,6 +12,7 @@ use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::tools::compile_tool::CompileTool;
 use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
 use crate::sven::tools::find_tool::FindTool;
+use crate::sven::tools::git_tools::GitDiffTool;
 use crate::sven::tools::grep_tool::GrepTool;
 use crate::sven::tools::list_files::ListFiles;
 use crate::sven::tools::manpage_tool::ManPageTool;
@@ -73,6 +74,7 @@ async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     registry.register(Box::new(SearchSkillsTool));
     registry.register(Box::new(GetSkillTool));
     registry.register(Box::new(CompileTool));
+    registry.register(Box::new(GitDiffTool));
 
     // MCP servers from the config: connect, list their tools, and
     // register each one like a built-in tool. A server that cannot be
