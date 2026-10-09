@@ -236,7 +236,9 @@ path-confinement check used by the file tools.
   options (for `find`, `-delete` is an action, not a path). Every
   model-controlled operand is therefore guarded — path-like parameters are
   prefixed with `./` or passed after the `--` end-of-options marker, and
-  man page names, which never legitimately start with `-`, are rejected.
+  man page names, which never legitimately start with `-` or contain `/`,
+  are rejected: `man` reads a slash-containing argument as a *file path*,
+  so without this check `ManPageTool` would be an arbitrary-file reader.
 - **Network:** `WebFetch` only accepts `http://` and `https://` URLs.
 - **MCP:** the HTTP transport accepts only `http://`/`https://` URLs and
   rejects header names containing `:` or control characters (a crafted

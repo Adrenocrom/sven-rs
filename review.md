@@ -65,6 +65,14 @@ model name or API key makes the agent *silently do nothing*), and the config rou
 
 ### C1. ManPageTool reads arbitrary files outside the workspace **[reproduced]**
 
+> **Status update 2026-10-09 — fixed.** `validate_name()` in `manpage_tool.rs` rejects
+> leading `-` and any `/` before the argument reaches `man`; unit tests cover both
+> rejection and acceptance, plus an end-to-end test through `Tool::execute` asserting
+> the tool (not just the helper) refuses `/etc/passwd`. README security section
+> updated. Verified against man-db's actual boundary: only slash-containing
+> arguments are opened as files (`README.md`, `.` and `..` are looked up as page
+> names), so the check fails closed with no legitimate names excluded.
+
 **Location:** `src/sven/tools/manpage_tool.rs`
 
 `man` interprets any argument containing `/` as a **file path**, not a page name — this is
