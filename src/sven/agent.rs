@@ -214,7 +214,10 @@ impl Agent {
                     "stream": true,
                     "temperature": self.config.options.temperature,
                     "tools": self.config.tool_registry.tool_definitions(),
-                    "messages": self.history.get()
+                    "messages": self.history.get(),
+                    "stream_options": {
+                        "include_usage": true
+                    }
                 });
                 if let Some(max_tokens) = self.config.options.max_tokens {
                     body["max_tokens"] = json!(max_tokens);

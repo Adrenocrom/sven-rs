@@ -129,6 +129,18 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
         }
     }
 
+    // The final chunk — sent because the request asked for
+    // `stream_options: {"include_usage": true}` — carries the token
+    // counts in `usage`; every other chunk has `usage: null`, and
+    // servers that ignore `stream_options` never send one, so no line
+    // is printed. Same display as the Ollama `eval_count` line.
+    if
+        let Some(completion_tokens) = json["usage"]["completion_tokens"].as_u64() &&
+        let Some(prompt_tokens) = json["usage"]["prompt_tokens"].as_u64()
+    {
+        println!("{}\n", term::bold(&format!("in {} out {}", prompt_tokens, completion_tokens)));
+    }
+
     // OpenAI streams each tool call as fragments: the first carries
     // `index`, `id` and the function `name` with an empty `arguments`
     // string, the following ones carry `index` and a string *fragment* of
@@ -404,6 +416,24 @@ mod tests {
         assert_eq!(state.tool_calls[0]["type"], "function");
         assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
         assert_eq!(state.tool_calls[0]["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn usage_chunk_prints_the_token_line() {
+        // the final chunk of a stream requested with
+        // stream_options: {"include_usage": true} — as sent by vLLM
+        let mut state = StreamState::default();
+        let backend = Backend::Vllm;
+        backend
+            .process_line(
+                &mut state,
+                r#"data: {"id":"chatcmpl-8bfb9d6ad14a3f56","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":77,"prompt_tokens":2289,"total_tokens":2366,"completion_tokens_details":{"reasoning_tokens":20}}}"#,
+            )
+            .unwrap();
+        // the usage chunk carries no content and no finish_reason —
+        // nothing is accumulated, the token line is just printed
+        assert!(state.content.is_empty());
+        assert_eq!(state.finish_reason, None);
     }
 
     #[test]
