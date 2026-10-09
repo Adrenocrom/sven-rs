@@ -46,6 +46,14 @@ thinking (rendered in green) and its answer inline; tool calls are printed
 with a 🔧 as they execute, and their results are fed back to the model until it
 stops calling tools.
 
+Each streamed response prints its token counts (`in <prompt> out <completion>`)
+as reported by the server, and when the run finishes a summary line shows the
+accumulated tokens of all rounds and the wall time:
+
+```
+run finished in 1m 3s — in 15234 out 812 tokens (16046 total)
+```
+
 | Command  | Effect                          |
 | -------- | ------------------------------- |
 | `/clear` | Reset the conversation history |

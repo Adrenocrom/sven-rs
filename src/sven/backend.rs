@@ -85,6 +85,10 @@ fn process_json_ollama(stream_state: &mut StreamState, json: &Value) {
         let Some(prompt_eval_count) = json["prompt_eval_count"].as_u64()
     {
         println!("\n{}\n", term::bold(&format!("in {} out {}", prompt_eval_count, eval_count)));
+        // the done chunk reports the totals for the whole response —
+        // stored for the agent to accumulate across the rounds of a run
+        stream_state.usage.prompt_tokens = prompt_eval_count;
+        stream_state.usage.completion_tokens = eval_count;
     }
 
     if let Some(tcs) = json["message"]["tool_calls"].as_array() {
@@ -139,6 +143,10 @@ fn process_json_openai(backend: &Backend,stream_state: &mut StreamState, json: &
         let Some(prompt_tokens) = json["usage"]["prompt_tokens"].as_u64()
     {
         println!("{}\n", term::bold(&format!("in {} out {}", prompt_tokens, completion_tokens)));
+        // the usage chunk reports the totals for the whole response —
+        // stored for the agent to accumulate across the rounds of a run
+        stream_state.usage.prompt_tokens = prompt_tokens;
+        stream_state.usage.completion_tokens = completion_tokens;
     }
 
     // OpenAI streams each tool call as fragments: the first carries
@@ -434,6 +442,23 @@ mod tests {
         // nothing is accumulated, the token line is just printed
         assert!(state.content.is_empty());
         assert_eq!(state.finish_reason, None);
+        // the counts are stored for the agent to accumulate
+        assert_eq!(state.usage.prompt_tokens, 2289);
+        assert_eq!(state.usage.completion_tokens, 77);
+    }
+
+    #[test]
+    fn ollama_done_chunk_stores_the_token_counts() {
+        let mut state = StreamState::default();
+        let backend = Backend::Ollama;
+        backend
+            .process_line(
+                &mut state,
+                r#"{"message":{"content":"hi"},"done":true,"prompt_eval_count":42,"eval_count":7}"#,
+            )
+            .unwrap();
+        assert_eq!(state.usage.prompt_tokens, 42);
+        assert_eq!(state.usage.completion_tokens, 7);
     }
 
     #[test]

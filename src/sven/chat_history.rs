@@ -1,12 +1,36 @@
 use chrono::Local;
 use serde_json::{Value, json};
 
+/// Token counts of one streamed response, as reported by the server
+/// (Ollama: `prompt_eval_count`/`eval_count` on the done chunk;
+/// OpenAI-compatible: the `usage` chunk). The agent accumulates them
+/// across the rounds of a run.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn add(&mut self, other: &TokenUsage) {
+        self.prompt_tokens += other.prompt_tokens;
+        self.completion_tokens += other.completion_tokens;
+    }
+
+    pub fn total(&self) -> u64 {
+        self.prompt_tokens + self.completion_tokens
+    }
+}
+
 pub struct MessageResponse {
     pub content: String,
     pub tool_calls: Vec<Value>,
     /// Why the model stopped (`stop`, `length`, `tool_calls`, …). OpenAI
     /// only; Ollama has no equivalent and leaves it None.
     pub finish_reason: Option<String>,
+    /// Token counts of this response; the agent sums them over the
+    /// rounds of a run.
+    pub usage: TokenUsage,
 }
 
 /// Conversation history. `history` holds the durable messages (system,
@@ -139,6 +163,7 @@ mod tests {
             content: content.to_string(),
             tool_calls,
             finish_reason: None,
+            usage: TokenUsage::default(),
         }
     }
 

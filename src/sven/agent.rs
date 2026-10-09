@@ -5,7 +5,7 @@ use reqwest::{Client, Response};
 use serde_json::{Value, from_str, json};
 
 use crate::sven::backend::Backend;
-use crate::sven::chat_history::{ChatHistory, MessageResponse};
+use crate::sven::chat_history::{ChatHistory, MessageResponse, TokenUsage};
 use crate::sven::config::ChatOptions;
 use crate::sven::term;
 use crate::sven::tool_registry::ToolRegistry;
@@ -35,6 +35,10 @@ pub struct StreamState {
     /// `tool_calls`, …). None while the stream is still running, and
     /// always None for Ollama, which signals the end via `done` instead.
     pub finish_reason: Option<String>,
+    /// Token counts reported by the server for this response. Ollama
+    /// sends them on the done chunk, OpenAI-compatible servers in a
+    /// final `usage` chunk; servers that report nothing leave it at 0.
+    pub usage: TokenUsage,
 }
 
 /// Extract (name, arguments, id) from a tool-call payload. Local models
@@ -83,6 +87,26 @@ fn truncate(output: &str, max: usize) -> String {
     truncated
 }
 
+/// Human-readable duration for the run summary: one decimal below a
+/// minute, whole minutes/seconds above (`1.5s`, `2m 3s`, `1h 4m`). The
+/// seconds are rounded before the split so 59m59.9s carries into the
+/// next minute instead of printing "59m 60s".
+fn format_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 60.0 {
+        format!("{seconds:.1}s")
+    } else {
+        let total = seconds.round() as u64;
+        let minutes = total / 60;
+        let rest = total % 60;
+        if minutes < 60 {
+            format!("{minutes}m {rest}s")
+        } else {
+            format!("{}h {}m", minutes / 60, minutes % 60)
+        }
+    }
+}
+
 pub struct AgentConfig {
     pub host: String,
     pub model: String,
@@ -109,7 +133,27 @@ impl Agent {
         }
     }
 
+    /// One user prompt → final answer. Wraps the round loop to accumulate
+    /// the token usage of every round and measure the wall time until the
+    /// run finishes; the summary is printed on every exit path (final
+    /// answer, request error, round cap).
     pub async fn run(&mut self, message: &str) {
+        let start = std::time::Instant::now();
+        let mut usage = TokenUsage::default();
+        self.run_rounds(message, &mut usage).await;
+        println!(
+            "{}",
+            term::bold(&format!(
+                "run finished in {} — in {} out {} tokens ({} total)",
+                format_duration(start.elapsed()),
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total()
+            ))
+        );
+    }
+
+    async fn run_rounds(&mut self, message: &str, usage: &mut TokenUsage) {
         self.history.user(message);
         for _round in 0..MAX_TOOL_ROUNDS {
             let url = &self.config.backend.endpoint(&self.config.host);
@@ -142,6 +186,7 @@ impl Agent {
             }
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
+            usage.add(&message.usage);
             self.history.assistant(&message);
             if message.tool_calls.is_empty() {
                 // `length` means the model hit the `max_tokens` cap —
@@ -280,6 +325,7 @@ impl Agent {
             content: state.content,
             tool_calls: state.tool_calls,
             finish_reason: state.finish_reason,
+            usage: state.usage,
         }
     }
 
@@ -360,5 +406,28 @@ mod tests {
         assert!(truncated.chars().count() > MAX_TOOL_OUTPUT);
         assert!(truncated.ends_with("… [output truncated]"));
         assert_eq!(truncate("short", MAX_TOOL_OUTPUT), "short");
+    }
+
+    #[test]
+    fn formats_durations_readably() {
+        assert_eq!(format_duration(std::time::Duration::from_millis(1500)), "1.5s");
+        assert_eq!(format_duration(std::time::Duration::from_secs(59)), "59.0s");
+        assert_eq!(format_duration(std::time::Duration::from_secs(123)), "2m 3s");
+        assert_eq!(format_duration(std::time::Duration::from_secs(3840)), "1h 4m");
+        // 59m59.9s carries into the next minute instead of "59m 60s"
+        assert_eq!(
+            format_duration(std::time::Duration::from_millis(3_599_900)),
+            "1h 0m"
+        );
+    }
+
+    #[test]
+    fn token_usage_accumulates() {
+        let mut total = TokenUsage::default();
+        total.add(&TokenUsage { prompt_tokens: 100, completion_tokens: 20 });
+        total.add(&TokenUsage { prompt_tokens: 50, completion_tokens: 5 });
+        assert_eq!(total.prompt_tokens, 150);
+        assert_eq!(total.completion_tokens, 25);
+        assert_eq!(total.total(), 175);
     }
 }
