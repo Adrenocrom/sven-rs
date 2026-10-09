@@ -8,7 +8,9 @@ use crate::sven::backend::Backend;
 use crate::sven::chat_history::{ChatHistory, MessageResponse, TokenUsage};
 use crate::sven::config::ChatOptions;
 use crate::sven::term;
+use crate::sven::tool::Tool;
 use crate::sven::tool_registry::ToolRegistry;
+use crate::sven::tools::notify_tool::NotifySendTool;
 
 /// Maximum number of chat rounds with tool calls before the agent gives
 /// up — a model stuck in a tool loop would otherwise run forever.
@@ -18,6 +20,12 @@ const MAX_TOOL_ROUNDS: usize = 250;
 /// outputs are truncated so a single tool (e.g. a full man page) cannot
 /// flood the model's context window.
 const MAX_TOOL_OUTPUT: usize = 10_000;
+
+/// A run longer than this is notified with critical urgency: most
+/// daemons (GNOME Shell, Notify OSD) keep critical notifications on
+/// screen until dismissed instead of fading them out after a few
+/// seconds.
+const NOTIFY_CRITICAL_AFTER: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
 #[derive(Default)]
 pub struct StreamState {
@@ -163,16 +171,42 @@ impl Agent {
         let start = std::time::Instant::now();
         let mut usage = TokenUsage::default();
         self.run_rounds(message, &mut usage).await;
-        println!(
-            "{}",
-            term::bold(&format!(
-                "run finished in {} — in {} out {} tokens ({} total)",
-                format_duration(start.elapsed()),
-                format_tokens(usage.prompt_tokens),
-                format_tokens(usage.completion_tokens),
-                format_tokens(usage.total())
-            ))
+        let elapsed = start.elapsed();
+        let summary = format!(
+            "run finished in {} — in {} out {} tokens ({} total)",
+            format_duration(elapsed),
+            format_tokens(usage.prompt_tokens),
+            format_tokens(usage.completion_tokens),
+            format_tokens(usage.total())
         );
+        println!("{}", term::bold(&summary));
+        self.notify_finished(elapsed, &summary).await;
+    }
+
+    /// Tell the user the run is over by reusing `NotifySendTool` — the
+    /// same tool the model can call, so the argv layout, urgency
+    /// validation and error handling are not duplicated here. The tool
+    /// is a stateless unit struct, so calling it directly is equivalent
+    /// to going through the registry. A failure (e.g. no notification
+    /// daemon) is only reported on stderr: the run itself succeeded, and
+    /// the summary was already printed to the terminal.
+    async fn notify_finished(&self, elapsed: std::time::Duration, summary: &str) {
+        let urgency = if elapsed > NOTIFY_CRITICAL_AFTER {
+            "critical"
+        } else {
+            "normal"
+        };
+        if let Err(e) = NotifySendTool
+            .execute(json!({
+                "summary": "Sven: run finished",
+                "body": summary,
+                "urgency": urgency,
+                "app_name": "sven"
+            }))
+            .await
+        {
+            eprintln!("could not send notification: {}", e);
+        }
     }
 
     async fn run_rounds(&mut self, message: &str, usage: &mut TokenUsage) {
