@@ -1,371 +1,360 @@
-# Code Review — sven-rs (round 4)
+# Code Review — sven-rs (round 5)
 
 **Date:** 2026-10-09
 **Scope:** full workspace — `src/main.rs`, `src/sven/**` (agent, backend, chat_history, config,
-macros, security, security_error, skills, term, tool, tool_registry, 15 tool files,
-`mcp/{mod,transport}.rs`), `Cargo.toml`, `README.md`, `note.md`/`note2.md`/`note.html`,
-`diff.txt`. New since round 3: the MCP client (reviewed separately 2026-10-06, round 4 of the
-MCP stack), the async migration of `Tool::execute` and the whole MCP/HTTP path (reviewed and
-approved 2026-10-06), the `Vllm` backend variant, `GitDiffTool`, and the round-3 fixes
-(C1, M1, M2, M4, L8).
-**Method:** read every source file; verified the build (`cargo build` passes, exit 0);
-reproduced findings marked **[reproduced]** by calling the tools themselves (ManPageTool,
-GrepTool, GitDiffTool, FindTool). Findings marked **[code analysis]** are reasoned from the
-code. The test suite (47 `#[test]`/`#[tokio::test]` functions across 12 files) was **not
-executed** — CompileTool still runs `cargo build` only (carried L2), so everything in
-`#[cfg(test)]` is compile-verified at best.
+macros, security, security_error, skills, **stats [new]**, term, tool, tool_registry, 16 tool
+files, `mcp/{mod,transport}.rs`), `Cargo.toml` (now 0.3.0), `README.md`, `review.html`,
+`output.txt`. New since round 4: the statistics subsystem (`stats.rs`, `statistics.json`,
+`/stats` + `--stats`, the per-run summary line, `TokenUsage` accounting), `NotifySendTool` and
+the agent's run-finished notifications, `MAX_TOOL_OUTPUT` truncation, the `finish_reason:
+"length"` warning, rustyline input-history persistence, Ctrl-C re-prompt at the REPL, and
+per-backend terminal colors.
+**Method:** read every source file; verified the build (`cargo build` passes, exit 0, via
+CompileTool); findings marked **[reproduced]** were verified live by calling the tools
+themselves (ManPageTool, GrepTool); findings marked **[code analysis]** are reasoned from the
+code. The test suite (60 `#[test]`/`#[tokio::test]` functions across 13 files, up from 47/12 in
+round 4) was **not executed** — CompileTool still runs `cargo build` only (carried L2), so
+everything in `#[cfg(test)]` is compile-verified at best.
 
-This is the fourth round. Round 3's critical (ManPageTool arbitrary-file read) and its two
-mediums (swallowed HTTP errors, `Backend` serde mismatch) are genuinely fixed — each with
-regression tests, which is the part previous rounds kept asking for. This round found **one
-new medium**: the `Backend` fix's own documentation claims capitalized serde aliases that do
-not exist, so config files written before the fix now break in exactly the silent
-whole-config-reverts-to-defaults way round 3 flagged. Plus five lows, and a long tail of
-carried items. §6 adds the requested **feature ideas**.
+This is the fifth round. The headline is uncomfortable: round 4's single medium — the `Backend`
+serde-alias contradiction, listed as priority #1 — is **still open, unchanged**, while a feature
+landed instead. To be fair, the feature is good: token tracking was implemented essentially as
+round 4 proposed (and folded into `statistics.json` rather than a separate `tokens.json`, which
+is the better shape), the stats store fails soft in every direction, and `NotifySendTool` is the
+best-hardened subprocess tool in the tree. This round found **one new medium** — the
+malformed-tool-call recovery loop, whose whole purpose is letting a broken call self-correct,
+kills the run one round later on OpenAI-compatible backends — plus five lows, and the familiar
+carried long tail. §6 carries the feature list forward with updated statuses.
 
 ## Summary
 
-The project is in noticeably better shape than round 3. The security boundary held under
-re-attack: `ManPageTool("/etc/passwd")` is rejected with a clear message, and the fix is
-tested at both the helper and the `Tool::execute` level. The agent now surfaces HTTP errors
-instead of silently doing nothing, `grep` speaks ERE, OpenAI reasoning models render on both
-`reasoning` and `reasoning_content`, and the config round-trips the names the program itself
-prints. The MCP client is the strongest subsystem in the codebase — hand-rolled JSON-RPC 2.0
-that implements the Streamable HTTP MUSTs correctly and is thoroughly tested through a mock
-transport.
-
-The systemic weakness is still **context management**: history grows without bound, the tool
-round cap is still an unexplained 250, and nothing in the pipeline knows how many tokens the
-conversation occupies. That is also the highest-value *feature* to build next (§6), because
-every long session eventually dies of it — silently on Ollama (server-side truncation), or as
-a 400 on OpenAI-compatible servers.
+The project keeps improving in the small: errors surface, counts accumulate, output is
+truncated, notifications fire. The two systemic items are unchanged and still dwarf everything
+else: **round-4 M1** (three comments promise serde aliases that do not exist, so pre-fix
+configs silently revert to whole-config defaults) and **unbounded history** — `MAX_TOOL_OUTPUT`
+now caps a single tool result at 10 K chars, but nothing caps the conversation against
+`num_ctx`, and `MAX_TOOL_ROUNDS` is still an unexplained 250. Every long session still
+eventually degrades silently on Ollama or 400s on OpenAI-compatible servers. The security
+boundary held: `ManPageTool("/etc/passwd")` is still rejected with the round-3 message
+**[reproduced]**, and the MCP client remains the strongest subsystem.
 
 ---
 
-## §1 Round-3 findings — verification
+## §1 Round-4 findings — verification
 
-| # | Round-3 finding | Status |
+| # | Round-4 finding | Status |
 |---|---|---|
-| C1 | ManPageTool reads arbitrary files | ✅ **fixed** — `validate_name()` rejects leading `-` and any `/`; 3 tests incl. end-to-end through `Tool::execute`; README security section updated. **[reproduced]** `ManPageTool(name: "/etc/passwd")` → `invalid man page name /etc/passwd: page names never contain '/'` |
-| M1 | HTTP error responses silently swallowed | ✅ **fixed** — status checked before parsing, body surfaced (truncated to 500 chars), `pop_user()` keeps failed turns from leaving a dangling prompt. Residual: an `{"error": …}` object inside a *200* NDJSON stream is still silently dropped on the Ollama path (see L5) |
-| M2 | `"backend": "openai"` fails to parse | ✅ **fixed** — `#[serde(rename_all = "lowercase")]` + 3 config tests. **But** the fix's comments claim capitalized aliases are kept for old configs, and they are not — new M1 below |
-| M3 | grep exit 1 reported as error | ❌ open — **[reproduced]** again this round: a no-match search returns `grep exited with exit status: 1:` instead of "no matches" |
-| M4 | grep uses BRE | ✅ **fixed** — `-rniE`, description says "extended regex (ERE)" |
-| M5 | unbounded history; round cap quietly 25 → 250 | ❌ open — `MAX_TOOL_ROUNDS` still 250, comment still doesn't justify it; no trimming against `num_ctx` |
-| M6 | no timeouts outside curl | ❌ open — `Client::new()` in `agent.rs` has no connect/read timeout; `man`/`ddgr`/`cargo`/`grep`/`find`/`ls` unbounded. (The MCP stack *does* have timeouts everywhere — the gap is the chat client and the subprocess tools) |
-| L1 | `n: 0` replaces nothing, reports success | ❌ open |
-| L2 | CompileTool: case-sensitive enum, build-only | ❌ open — and aggravated: the param description now literally says "if **rust** is selected", lowercase, which fails to deserialize. A `Test` variant would also let the agent run this repo's own 47 tests |
-| L3 | ManPageTool description / roff overstrikes | ❌ open — description still says "first page"; no `col -b` |
-| L4 | full params JSON printed to terminal | ❌ open — every `ReplaceFileTool` still dumps its whole `newcontent` |
-| L5 | FindTool exclusions anchored to `./` | ❌ open — `-not -path "./target/*"` never matches when `path` is given |
-| L6 | non-interactive mode undocumented; stdout mixing | 🟡 half fixed — README flags table now documents `--prompt`/`--end-of-prompt`; banner, thinking, tool lines and errors still share stdout with the answer |
-| L7 | skills-store writes follow symlinks | ❌ open — `fs::write` in `add_skill`/`update_skill` |
-| L8 | OpenAI reasoning: only `delta.reasoning` | ✅ **fixed** — both keys tried, `reasoning` first |
-| L9 | OpenAI token usage never surfaced | ❌ open — no `stream_options.include_usage`, no usage display |
-| L10 | `max_tokens` no-op on Ollama; `num_predict` unexposed | ❌ open — README still silent; `max_tokens` is serialized into Ollama's `options` envelope where Go silently ignores it |
-| L11 | subprocess diagnostics in the user's locale | ❌ open — no `LC_ALL=C` anywhere |
-| L12 | hygiene grab-bag | 🟡 partial — `From<String>` dead code replaced by a `FromStr` clap actually uses; tokio `time` feature now genuinely used (MCP timeouts); `print_header` no longer shows `num_ctx` for OpenAI; README documents backend/api-key/MCP. Still open: commented-out code (`backend.rs` debug `println!`, `main.rs` `eprintln!`, `term.rs` dead `green`), `impl ToString` instead of `Display`, `endpoint(&self, host: &String)`, the user-visible "is recieved" typo in `--help`, `ReadTool` `(n as usize) + offset` overflow, `find -name` basename-only matching undocumented, `skill_spec.md` referenced but absent, `if let Err(_) =` clippy nit |
+| M1 | `Backend`: documented serde aliases do not exist | ❌ open — the three comments (`backend.rs:11–14`, `:258–260`, test at `:287`) still claim "capitalized aliases kept for old config files"; there is still no `#[serde(alias)]`; the test name `from_str_accepts_the_same_names_as_serde` still asserts what serde does not accept; the missing serde-side test (`"backend": "Ollama"`) was still not added |
+| L1 | OpenAI answers end with a double newline | ❌ open — the redundant `ends_with("\n")` block after `end_content()` is still in the `finish_reason` arm of `process_json_openai` |
+| L2 | GitDiffTool: README gap; `git diff .` is unstaged-only | ❌ open — still absent from the README tool table, and **NotifySendTool is now also missing** (19 built-ins registered, 17 listed); `git diff .` still shows unstaged changes only |
+| L3 | Repo hygiene: `diff.txt`, `note.html`, `note.md` | 🟡 half fixed — all three deleted ✅, but replaced by new debris: `output.txt` (a raw vLLM SSE transcript) and `review.html` (a rendered duplicate of round-4 `review.md`). See new L4 |
+| L4 | Empty assistant messages enter the durable history | ❌ open — `self.history.assistant(&message)` still runs before the tool-call check |
+| L5 | Ollama error objects inside a 200 stream are dropped | ❌ open — `process_json_ollama` still has no `json.get("error")` check (the OpenAI path does) |
+| L6 | Grab-bag (`Language` enum/description, `term.rs` dead code, `! ` spacing, `impl ToString`, `endpoint(&String)`, in-place file rewrite) | ❌ open — all six items verified still present |
 
-Carried from the two 2026-10-06 reviews (still open, unchanged): MCP **L1** stdio Drop skips
-SIGTERM, **L2** no `notifications/cancelled` on timeout, **L3** negotiated `protocolVersion`
-echoed into a header unvalidated, **L4** SSE stream kept open costs the full timeout, **L5**
-no HTTP DELETE on exit, **L6** `inputSchema` guard checks `is_object()` not
-`type == "object"` (verified still present in `tool_info`); async nits — 8 files missing EOF
-newlines, `ChildStdin::from_std` panics outside a runtime, `StdioTransport::Drop` can block
-~2 s, `discover()` doc duplication, `subprocess.rs` module doc lists pandoc, reqwest sends no
-`User-Agent`.
+### Carried from earlier rounds (still open, unchanged)
+
+| # | Finding (origin) | Note |
+|---|---|---|
+| M3 | grep exit 1 reported as error, not "no matches" (r3) | **[reproduced]** again this round: a no-match search returns `grep exited with exit status: 1:` |
+| M5 | Unbounded history; `MAX_TOOL_ROUNDS` = 250 unexplained (r3) | `agent.rs:18`; no trimming against `num_ctx`. `MAX_TOOL_OUTPUT` (new) caps one tool result, not the conversation |
+| M6 | No timeouts on the chat client / subprocess tools (r3) | `Client::new()` at `agent.rs:166`; the MCP stack remains fully timeout-covered — the gap is the chat client and `subprocess::run` |
+| L1 | `n: 0` replaces nothing, reports success (r3) | `replacen(.., 0)` in `edit_tool.rs` |
+| L2 | CompileTool: case-sensitive enum, build-only (r3, aggravated r4) | No `rename_all`, no `Test` variant; the param description still says lowercase "rust", which fails to deserialize |
+| L3 | ManPageTool description "first page"; roff overstrikes (r3) | No `col -b` |
+| L4 | Full params JSON printed per tool call (r3) | `process_tool_call` prints `params` untruncated — every `ReplaceFileTool` still dumps its whole `newcontent` to the terminal |
+| L5 | FindTool exclusions anchored to `./` never match a given `path` (r3) | `-not -path "./target/*"` |
+| L6 | Non-interactive mode half documented; stdout mixing (r3) | Flags documented; banner/thinking/tool lines still share stdout with the answer |
+| L7 | Skills-store writes follow symlinks (r3) | `fs::write` in `add_skill`/`update_skill`; weak threat in a config dir — hardening only |
+| L10 | `max_tokens` no-op on Ollama; `num_predict` unexposed (r3) | Serialized into the `options` envelope where Go silently ignores it |
+| L11 | Subprocess diagnostics in the user's locale (r3) | No `LC_ALL=C` anywhere |
+| L12 | Hygiene grab-bag (r3/r4) | Dead code (`backend.rs` debug `println!`, `main.rs` `eprintln!`, `term.rs` `green`), `impl ToString for Backend` (`backend.rs:248`), `endpoint(&self, host: &String)` (`backend.rs:197`), the user-visible "is recieved" typo (`main.rs:38`), `ReadTool` `(n as usize) + offset` overflow, `find -name` basename-only matching undocumented, `skill_spec.md` referenced but absent (`skills.rs:2`, `skill_tools.rs:1`), `if let Err(_)` clippy nit |
+| MCP L1–L6 | SIGTERM skipped in stdio Drop, no `notifications/cancelled` on timeout, negotiated version echoed into a header unvalidated, SSE stream held open costs the full timeout, no HTTP DELETE on exit, `inputSchema` guard checks `is_object()` not `type == "object"` (2026-10-06) | All verified still present (`transport.rs` Drop, `mod.rs:333`) |
+| Async nits | Missing EOF newlines, `ChildStdin::from_std` panics outside a runtime, blocking Drop ~2 s, no `User-Agent`, `subprocess.rs` doc lists pandoc (2026-10-06) | All carried |
 
 ---
 
 ## §2 New findings — medium
 
-### M1. `Backend`: the documented serde aliases do not exist **[code analysis]**
+### M1. The malformed-tool-call recovery loop is Ollama-only; on OpenAI/vLLM it kills the run one round later **[code analysis]**
 
-**Location:** `src/sven/backend.rs` (enum doc comment, `FromStr` doc comment, test comment),
-`src/sven/config.rs::load()`
+**Location:** `src/sven/agent.rs::run_rounds` (tool-call loop), `src/sven/chat_history.rs::assistant`/`tool`
 
-Three comments claim that the capitalized enum names the pre-fix code required are "kept as
-aliases so config files written before the rename keep parsing":
+The design intent is right and documented: *"a malformed call becomes a tool result describing
+the problem, so the model can correct itself instead of the agent crashing."* On
+OpenAI-compatible backends the mechanism defeats itself:
 
-> `/// The capitalized forms the un-annotated enum used to require are kept as aliases …`
-> `/// (lowercase, plus the capitalized aliases kept for old config files) …`
-> `// capitalized aliases kept for old config files`
+1. A stream yields a tool call that fails `parse_tool_call` — missing name, non-string name,
+   invalid JSON in `arguments`. That is not exotic: it is exactly what a call cut by
+   `max_tokens` (`finish_reason: "length"`, mid-`arguments`) looks like after fragment merging,
+   and small local models behind vLLM are this agent's target audience.
+2. `self.history.assistant(&message)` has **already** pushed the raw call into the assistant
+   echo — it runs before the parse loop, and it echoes `message.tool_calls` verbatim (only
+   defaulting `type`).
+3. The parse failure becomes a tool result. When the fragment carried no `id`, `chat_history::
+   tool()` omits `tool_call_id` (it is only sent "when known").
+4. The next round's request therefore carries an assistant message with a malformed
+   `tool_calls` entry *and* a `role: "tool"` message without `tool_call_id`. OpenAI-compatible
+   servers reject the whole request with 400 — the same litellm/`ChatCompletionMessage…`
+   validation the `type: "function"` default was added for.
+5. The run ends in `RunStatus::Error`. The model never sees the correction feedback the
+   mechanism wrote for it.
 
-The enum carries only `#[serde(rename_all = "lowercase")]` — there is no `#[serde(alias)]`
-anywhere. Only `FromStr` (the `--backend` CLI flag) accepts `"Ollama"`/`"OpenAI"`. A config
-file written when the capitalized form was the *only* working spelling now fails to parse,
-and `SvenConfig::load()` answers a parse error by returning `SvenConfig::default()` — the
-entire setup (backend, model, host, data_dir) silently reverts to Ollama defaults, with one
-stderr line as the only clue. That is precisely the failure mode round-3 M2 called medium;
-the fix reintroduced it for pre-fix configs while claiming not to. The test name
-(`from_str_accepts_the_same_names_as_serde`) is itself wrong — serde does not accept what it
-asserts.
+The session recovers on the next prompt (`user()` clears `tool_history`), so this is a killed
+run, not a bricked session — but the recovery loop simply does not exist on half the supported
+backends, and it fails on precisely the malformed-call situation it was built for. Ollama
+ignores both problems and works as designed.
 
-**Fix** — make the code match the comments (one attribute per variant):
-
-```rust
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Backend {
-    #[serde(alias = "Ollama")]
-    Ollama,
-    #[serde(alias = "OpenAI")]
-    OpenAI,
-    Vllm,
-}
-```
-
-(`Vllm` never existed capitalized-only, so it needs no alias.) Add the missing serde-side
-test: `serde_json::from_str::<SvenConfig>(r#"{"backend": "Ollama"}"#)` must succeed.
-
-**Systemic note:** `load()`'s parse-error → whole-config-defaults fallback is what turns every
-config typo into a silent downgrade. For an agent with write tools, failing fast
-(`eprintln!` + `std::process::exit(1)`) on a *malformed* config is safer than proceeding with
-defaults; the per-field `#[serde(default)]` already handles missing fields gracefully.
+**Fix** — validate before anything enters history: parse all calls first, echo only the
+parseable ones (or synthesize missing ids), and report dropped calls via `assistant_note` —
+the round-cap path already has that shape. This is the same "history accepts whatever the
+stream produced" family as round-4 L4 (empty assistant messages); one validation step between
+`handle_chunks` and `history.assistant` closes both. Add the missing test: feed a fragment
+stream with a nameless call through `Backend` + `ChatHistory`, assert the next request body
+contains no malformed `tool_calls` and no id-less tool message.
 
 ---
 
 ## §3 New findings — low
 
-### L1. OpenAI answers end with a double newline **[code analysis]**
+### L1. Run-finished notifications: unconditional, undocumented **[code analysis]**
 
-**Location:** `src/sven/backend.rs::process_json_openai` (finish_reason block)
+**Location:** `src/sven/agent.rs::notify_finished` / `NOTIFY_CRITICAL_AFTER`, `README.md`
 
-`end_content()` already prints a newline when the content does not end with one; the
-`finish_reason` block then repeats the same check and prints a second. Content-only answers
-render as `answer\n\n` on OpenAI/vLLM but `answer\n` on Ollama, and a thinking-only response
-(finish_reason `length` mid-thought) gets a stray blank line from an empty `content`. Delete
-the redundant block — `end_thinking`/`end_content` already do everything it does.
+`notify_finished` fires after **every** run: scripted `--end-of-prompt` sessions (one
+notification per piped prompt), Error runs (titled "Sven: run finished" over a failed request),
+and sub-second runs alike. There is no config flag and no TTY gate; without a notification
+daemon (or without `notify-send` installed) it prints `could not send notification: …` to
+stderr after every single run. The README does not mention the behavior at all — a user
+discovers it the first time a desktop popup appears.
 
-### L2. `GitDiffTool`: README gaps and unstaged-only semantics **[code analysis]**
+Related doc drift in the same area: `NotifySendTool` is missing from the README tool table
+(19 built-ins registered, 17 listed — `GitDiffTool` still missing too, carried), and
+`notify-send`, `git`, and `cargo`/`mvn`/`dotnet`/`python` are all missing from the
+requirements list.
 
-**Location:** `src/sven/tools/git_tools.rs`, `README.md`
+**Fix** — a config flag (e.g. `"notifications": true`, default on), skip when the run errored,
+gate on stdout being a TTY for the scripted mode, and sync the README (tool table,
+requirements, one sentence on the behavior). The >3 min → critical urgency choice is good —
+keep it.
 
-- The tool is missing from the README's tool table (18 tools registered, 17 listed), and
-  `git` is missing from the README's requirements list (as are `cargo`/`mvn`/`dotnet`/
-  `python` for CompileTool).
-- `git diff .` shows **unstaged** changes only. Anything the user staged (`git add`) and all
-  untracked files are invisible — for a "review my work" flow that is a surprise. Either
-  document it in the description ("get the unstaged Git diff") or use `git diff HEAD .` to
-  include staged changes. Untracked files need `git status --short` — a natural companion
-  tool (§6).
+### L2. Two SSE parsers with different strictness — the chat one silently drops legal frames **[code analysis]**
 
-### L3. Repo hygiene: `diff.txt`, `note.html`, `note.md` **[code analysis]**
+**Location:** `src/sven/backend.rs::process_line` vs `src/sven/mcp/transport.rs::parse_sse`
 
-`diff.txt` is a stray `Cargo.lock` diff dump from the async migration; `note.html` is a
-rendered duplicate of `note.md`; `note.md` is superseded by `note2.md` — which is itself now
-stale (its item 5, "Git `diff` tool — missing", closed by `GitDiffTool`). Delete all three
-(note2.md's closed items can be marked done), or move them out of the repo root; they will
-otherwise keep feeding the model stale information via `FindTool("*.md")`.
+The chat path requires exactly `data: ` (with space): `line.strip_prefix("data: ")` silently
+skips a `data:{…}` frame — legal per the SSE spec — and multi-line data frames can never
+parse, because each line is decoded independently (a JSON split across two `data:` lines just
+logs "couldn't decode JSON … skipping line"). The MCP transport's `parse_sse` handles both
+correctly: optional space, multi-line join, blank-line flush, `event:`/`id:`/`retry:` ignored.
 
-### L4. Empty assistant messages enter the durable history **[code analysis]**
+Nothing breaks today — OpenAI, vLLM and litellm all emit single-line `data: ` frames — but the
+correct parser already exists in this codebase. Extract it (or share a helper) instead of
+maintaining two behaviors; the chat path's line-splitting in `handle_chunks` can feed whole
+frames to it the way `read_bounded`'s output already does for MCP.
 
-**Location:** `src/sven/agent.rs::run()`
+### L3. The new input history is fragile: fresh-install save failure and SIGINT loss **[code analysis]**
 
-`self.history.assistant(&message)` runs before the tool-call check, so a turn that produced
-neither content nor tool calls (a stream cut by `finish_reason: "length"` mid-thought, or a
-mid-stream error) pushes `{"role":"assistant","content":""}` into the durable history. The
-next request carries the empty message, and small local models handle those poorly. Skip the
-push when `content` is empty and `tool_calls` is empty (the `length` warning already tells the
-user what happened).
+**Location:** `src/main.rs` (history path, REPL exit), `src/sven/skills.rs::init_skills_dir`, `src/sven/stats.rs::save`
 
-### L5. Ollama error objects inside a 200 stream are still dropped **[code analysis]**
+The rustyline history is saved only at clean REPL exit, and `<data_dir>` is created lazily by
+`StatsStore::save` after the **first recorded run**. Consequences:
 
-**Location:** `src/sven/backend.rs::process_json_ollama`
+- Fresh install, user types `/close` before any run → `could not save history: No such file
+  or directory` (the dir does not exist yet; `init_skills_dir` only computes the path, it
+  creates nothing).
+- Ctrl-C while `agent.run()` is streaming kills the process (default SIGINT disposition; the
+  Ctrl-C re-prompt only covers the readline prompt) → every history line of the session is
+  lost, because saving happens only after the loop breaks.
 
-Round-3 M1's optional half: the OpenAI path checks `json.get("error")` mid-stream, the Ollama
-path does not. An `{"error": "…"}` NDJSON line inside a 200 response parses fine, matches no
-field (`message`/`done`/`tool_calls`), and vanishes — the turn ends as an empty answer with no
-diagnostic. Three lines mirroring the OpenAI check close it.
+**Fix** — create `data_dir` at startup (`init_skills_dir` already computes the path; one
+`create_dir_all`), and/or save the history after each run rather than at exit. The second
+half pairs naturally with carried feature idea 13 (mid-stream Ctrl-C).
 
-### L6. Grab-bag
+### L4. Repo-root debris again: `output.txt`, `review.html` **[code analysis]**
 
-- `Language` in `compile_tool.rs` has no `rename_all` **and** its description says "if rust
-  is selected" — the model's first attempt is now guaranteed to fail (aggravates carried L2).
-- `term.rs`: the commented-out `green()` and the commented color line in `thinking()` are
-  dead weight; `tool_color`'s doc still says "Green" though it is per-backend now.
-- `if ! stream_state…` (space after `!`) in `backend.rs` is not rustfmt style; a `cargo fmt`
-  pass would also settle the `mod.rs` module ordering.
-- `impl ToString for Backend` → `impl Display` (clippy `inherent_to_string`);
-  `endpoint(&self, host: &String)` → `&str` (clippy `ptr_arg`).
-- `SearchAndReplaceTool` truncates the file to zero and rewrites in place — a failed
-  `write_all` leaves a partial file. Write-temp-then-rename costs four lines and removes the
-  window (it would also close carried L7's symlink concern for this tool).
+**Location:** repo root
 
-**Security notes (accepted risks — unchanged, keep documented):** TOCTOU between
-`is_inside_cwd` and the open; CompileTool executes `build.rs` by design; WebFetch can reach
-localhost/private ranges and follows redirects (curl ≥ 7.65.2 already excludes `file://`
-from redirect protocols; `--proto-redir -all,http,https` would make it explicit).
+Round-4 L3 (`note.md`, `note.html`, `diff.txt`) was fixed by deletion — and the pattern
+repeated within one round:
+
+- `output.txt` — a raw vLLM SSE transcript (the `data: {…}` lines interleaved with rendered
+  thinking/content, i.e. the terminal with the commented-out debug `println!` in
+  `backend.rs::process_line` enabled). Session debris.
+- `review.html` — a rendered duplicate of round-4 `review.md`; stale the moment this file was
+  written.
+
+`.gitignore` still contains only `/target`. The root cause is structural: the agent's cwd is
+the repo, so scratch output lands in the repo root and gets committed. Delete both files, and
+either keep scratch out of the repo or gitignore it (`output.txt` at minimum). Worth checking
+the root before every commit — this is the second round in a row for this finding.
+
+### L5. Grab-bag **[code analysis]**
+
+- `statistics.json` is last-writer-wins across concurrent sven instances (each `StatsStore`
+  holds its startup image and rewrites the whole file). Acceptable for the purpose — worth a
+  comment so it is a documented choice, not a surprise.
+- The run summary and the notification say "run finished" even for `RunStatus::Error` runs —
+  "run ended" (or skipping the notification on errors, see L1) would read better.
+- `println!("mcp: '{}' connected ({} tools) \n", …)` goes to stdout — it mixes with piped
+  answers (the L6 stdout-mixing family) and has a stray space before the newline.
+- `ChatHistory::system` with an empty configured `system_prompt` produces `"\nCurrent Date: …"`
+  — a leading newline in the system message. Cosmetic.
+- `handle_chunks` drains the buffer with `buffer.drain(..=pos)` per line — O(n²) if a single
+  chunk contains many lines. Fine in practice; an index walk with `split_off` would be linear.
 
 ---
 
 ## §4 What's good
 
-- **The round-3 fixes are real, tested, and re-verified live.** The man-page fix fails
-  closed, documents man-db's actual boundary, and — the detail that makes it trustworthy —
-  has an end-to-end test through `Tool::execute` that asserts on the *message*, so it stays
-  honest even on machines without `man`. The HTTP-status fix includes `pop_user()`, the
-  detail that keeps failed turns from poisoning the next one.
-- **The MCP client is the best code in the project.** Hand-rolled JSON-RPC 2.0 with every
-  client-side Streamable HTTP MUST implemented, session-expiry re-init with retry-once,
-  stale-response dropping, pagination loop guard, `isError` → error, binary-content
-  placeholders, argv hardening (`--`, header validation, scheme allowlist, no redirects) —
-  and a mock transport that tests the whole handshake sequence.
-- **The async migration kept curl's semantics faithfully** — `--max-time` → request timeout
-  + body deadline with partial-data-kept-on-timeout, `redirect(Policy::none())` so auth
-  headers can't leak cross-origin — and the `!Send` traps it hit are documented where they
-  bit, which is exactly where the next person needs them.
-- **Tests now cover the things that break silently**: config round-trips (including the
-  round-3 M2 regression), confinement (traversal, symlinks, dangling symlinks), stream
-  shapes (fragment merging, `[DONE]`, mid-stream errors, `finish_reason`), tool-call
-  parsing (string arguments, malformed payloads), MCP handshake/id-matching/SSE parsing.
-- **The README caught up**: backend table, `SVEN_API_KEY` rationale, MCP section with honest
-  behavior notes ("a hung server cannot freeze the agent", "requests the server sends to
-  sven are refused"), a security section that states the argv caveat instead of overclaiming,
-  and a provenance section that is candid about the Python origin.
+- **Round-4 feature idea 3 (token tracking) landed, and better than proposed.** No separate
+  `tokens.json` — usage is folded into `statistics.json` alongside runs/rounds/tool calls.
+  The per-response `in <prompt> out <completion>` line, the per-run summary, and lifetime
+  `/stats` all match the README examples, and the formatting edge cases are pinned by tests
+  (`999_999` → `1M`, `59m59.9s` carrying into `1h 0m` instead of `59m 60s`).
+- **The stats store fails soft in every direction a stats store should:** missing file →
+  zero, corrupt file → stderr + zero, write failure → stderr but never breaks the finished
+  run, `#[serde(default)]` keeps older files loading (with a test for exactly that).
+- **`MAX_TOOL_OUTPUT` truncation** cuts on character boundaries (never mid-character) and
+  appends a marker the model can see; malformed calls become self-describing tool results
+  instead of panics — the intent is right, and §2 M1 is about where it falls short, not
+  whether it exists.
+- **`notify_finished` reuses `NotifySendTool` instead of duplicating argv construction**, and
+  `NotifySendTool` itself is the best-hardened subprocess tool in the tree: enum urgency
+  (typos and injection rejected at deserialization), `--` terminator, unit-tested argv, and
+  an end-to-end empty-summary test that stays green without a daemon installed.
+- **The `finish_reason: "length"` warning names the exact config knob to raise** — the kind
+  of error message that turns a silent truncation into a one-line fix.
+- **Test suite grew 47 → 60** across 12 → 13 files; the man-page fix's end-to-end test
+  asserts on the *message*, keeping itself honest on machines without `man`.
+- Ctrl-C at the prompt now clears the line and re-prompts instead of exiting.
+- `note.md`, `note.html` and `diff.txt` were actually deleted.
 
 ## §5 Test coverage
 
-47 test functions across 12 files. The gaps, in payoff order:
+60 test functions across 13 files. The gaps, in payoff order:
 
-1. **No test deserializes a config with `"backend": "Ollama"`** — would have caught new M1.
-2. **No test runs at all in CI** — there is no CI (no `.github/`), and CompileTool cannot run
-   `cargo test` (carried L2). A `Test` language variant + a two-line GitHub Actions workflow
-   would close both.
-3. `agent.rs::run()`'s error paths (HTTP 4xx, empty response) are untested — `handle_chunks`
-   is testable with a canned `Response` only via an abstraction that doesn't exist yet; at
-   minimum, `truncate` + the `length` warning deserve a test.
-4. `subprocess::run`'s exit-status formatting is untested (spawn `sh -c 'exit 1'`-style
-   fixtures would do).
+1. **Still no serde test for `"backend": "Ollama"`** — the exact test round 4 asked for; it
+   would have caught round-4 M1 and still would.
+2. **No test covers the malformed-call → history → next-request interaction** — new §2 M1
+   lives exactly in the gap between `parse_tool_call`'s tests and `ChatHistory`'s tests.
+3. **No CI, and CompileTool still cannot run `cargo test`** (carried L2) — no review round
+   has ever executed this repo's tests. A `Test` variant plus a two-line GitHub Actions
+   workflow closes both.
+4. `Agent::run`'s error paths (HTTP 4xx → `pop_user`, the `length` warning) are untested.
+5. `notify_finished`'s urgency threshold (>3 min → critical) is untested — trivial, but it
+   is the only new branch with no coverage.
 
 ---
 
-## §6 Feature ideas
+## §6 Feature ideas (carried forward from round 4, statuses updated)
 
 Ordered by leverage. "Closes" lists the findings a feature would resolve as a side effect.
 
 ### A. Fixes that are features — do these first
 
-1. **Context-window management** *(closes M5, most of L6's pain)* — the single highest-value
-   addition. Two parts: (a) a character/token budget derived from `num_ctx` that trims the
-   durable history (drop oldest tool rounds first, then oldest turns); (b) Python-parity
-   summarization — when history exceeds a threshold, summarize all but the last N messages
-   with a dedicated prompt and rebuild as system + summary + recent. Without this, every
-   long session eventually degrades silently (Ollama truncates server-side; OpenAI 400s).
-2. **`Test` variant for CompileTool** *(closes L2)* — `cargo test` / `mvn test` /
-   `dotnet test` / `python -m pytest`. Also unlocks running this repo's own suite, which no
-   review round has ever been able to do. Add `#[serde(rename_all = "lowercase")]` while
-   touching the enum, and fix the description.
-3. **Token tracking** *(closes L9; Python parity)* — request `stream_options:
-   {"include_usage": true}` on OpenAI, read `usage` from the final chunk (note: that chunk
-   carries `"choices": []`), accumulate lifetime totals in `tokens.json` under `data_dir`,
-   print `in N out M | lifetime X|Y` for both backends.
+1. **Context-window management** *(closes M5, most of L6's pain)* — still the single
+   highest-value addition, and the new `MAX_TOOL_OUTPUT` makes it *more* visible, not less:
+   one tool result is capped, the conversation still is not. (a) A budget derived from
+   `num_ctx` that trims the durable history (drop oldest tool rounds first, then oldest
+   turns); (b) summarization — when history exceeds a threshold, summarize all but the last N
+   messages and rebuild as system + summary + recent.
+2. **`Test` variant for CompileTool** *(closes L2)* — `cargo test` / `mvn test` / `dotnet
+   test` / `python -m pytest`; add `#[serde(rename_all = "lowercase")]` while touching the
+   enum, and fix the description. Unlocks running this repo's own 60 tests.
+3. ~~Token tracking~~ — **done this round** ✅ (closes r3 L9; folded into `statistics.json`).
 4. **Timeouts everywhere** *(closes M6)* — `reqwest::Client::builder().connect_timeout(..)`
-   for the chat client; a configurable `tool_timeout` applied in `subprocess::run` via
-   `tokio::time::timeout` around `command.output()`.
-5. **Deterministic tool output** *(closes L3, L11)* — pipe man through `col -b`; set
-   `LC_ALL=C` on every `Command` in `subprocess::run` so diagnostics are English regardless
-   of the user's locale.
+   for the chat client; a configurable `tool_timeout` in `subprocess::run` via
+   `tokio::time::timeout`.
+5. **Deterministic tool output** *(closes L3, L11)* — pipe man through `col -b`; `LC_ALL=C` on
+   every `Command` in `subprocess::run`.
+6. **Notification opt-out** *(closes new L1)* — config flag + TTY gate + README sync; skip on
+   errored runs.
+7. **Shared SSE parser** *(closes new L2)* — extract `parse_sse` for the chat path.
+8. **Startup directory creation + per-run history save** *(closes new L3)* — one
+   `create_dir_all` in `init_skills_dir`, save history after each run.
 
 ### B. Python-parity ports (from note2.md, prioritized)
 
-6. **FIFO task queue** (`tasks.json`, tools `add_task`/`current_task`/`complete_task`/
-   `list_tasks`/`cancel_task`) — lets the model decompose big goals and survive restarts;
-   today it must track the plan in conversation tokens, which fights feature 1.
-7. **Cross-session history** (`chat_history.json` + `--resume`) — the durable history
-   already exists in memory; persisting the non-tool messages is a small step for a big
-   quality-of-life gain.
-8. **`touch` and `replaceline` tools** — `touch` is trivial; `replaceline(path, line, text)`
-   is a cheap precise edit that avoids resending whole files (good for small local models
-   with small contexts).
-9. **Git tools beyond diff** — `git status --short`, `git log -n`, and opt-in
-   `git add`/`commit` (write actions; consider gating behind a config flag, see idea 17).
-10. **Per-file compile** — `compilefile(path)`; Python parity, and useful for the
-    edit-one-file-verify loop.
-11. **Config profiles** — a `profiles` map in `sven.json` selected by `SVEN_PROFILE`,
-    overlaying per-profile keys; one config for "local small model" vs "big hosted model".
-12. **Ollama options**: `keep_alive` (default `"10m"` — avoids model reloads between turns),
-    `repeat_penalty`, and `num_predict` *(closes L10)*.
-13. **Mid-stream Ctrl-C** — catch interrupt during streaming, keep the partial answer and
-    history, return to the prompt (Python does this; sven currently can't interrupt a
-    streaming turn at all).
+9. **FIFO task queue** (`tasks.json`, `add_task`/`current_task`/`complete_task`/`list_tasks`/
+   `cancel_task`) — lets the model decompose big goals and survive restarts.
+10. **Cross-session conversation history** (`chat_history.json` + `--resume`) — *partially
+    done*: the user's **input** history now persists via rustyline; the conversation still
+    does not.
+11. **`touch` and `replaceline` tools** — `replaceline(path, line, text)` avoids resending
+    whole files; good for small contexts.
+12. **Git tools beyond diff** — `git status --short`, `git log -n`, opt-in `git add`/`commit`
+    (write actions; consider a config gate, see idea 17). Would also fix GitDiffTool's
+    unstaged-only surprise (carried r4 L2).
+13. **Per-file compile** — `compilefile(path)`; useful for the edit-one-file-verify loop.
+14. **Config profiles** — a `profiles` map selected by `SVEN_PROFILE`.
+15. **Ollama options**: `keep_alive` (default `"10m"`), `repeat_penalty`, `num_predict`
+    *(closes L10)*.
+16. **Mid-stream Ctrl-C** — catch interrupt during streaming, keep the partial answer and
+    history, return to the prompt *(also closes the SIGINT-loss half of new L3)*.
 
 ### C. New directions
 
-14. **Project context file** — auto-load `SVEN.md`/`AGENTS.md` from the cwd into the system
-    prompt (the CLAUDE.md/Cursor-rules pattern). Pairs naturally with skills: project rules
-    local, cross-project knowledge in the skill store.
-15. **One-shot mode + exit codes** — `sven -m "prompt"` for scripting (simpler than
-    `--end-of-prompt` for the common case), non-zero exit on backend/tool failure, and route
-    everything but the answer to stderr when stdout is not a TTY *(closes the stdout-mixing
-    half of L6)*.
-16. **Slash commands** — `/help`, `/tools` (list registered tools), `/model <name>` and
-    `/backend <name>` (hot-swap without restart), `/mcp` (servers + tool counts), `/retry`
-    (re-run the last turn), `/undo` (see 17).
-17. **Confirmation mode + undo** — a config flag that asks y/N before file-modifying tools
-    (`ReplaceFileTool`, `SearchAndReplaceTool`, `RemoveSkillTool`), optionally showing a
-    unified diff; and/or an automatic checkpoint before each write (copy to
-    `.sven-backups/` or `git stash create`) with `/undo` to revert. Cheap insurance that makes
-    the agent safe to run on repos with uncommitted work.
-18. **Parallel tool execution** — the agent already receives multiple `tool_calls` per round
-    but executes them sequentially; `futures::future::join_all` over read-only tools would
-    cut wall-clock time on multi-call rounds (MCP tools share a per-server mutex, so
-    parallelism is naturally bounded).
-19. **Retry with backoff** — 429/5xx/timeouts on the chat request currently end the turn;
-    one retry with a short backoff handles vLLM cold starts and rate limits gracefully.
-20. **Startup doctor** — check for `curl`/`pandoc`/`ddgr`/`man`/`git` and warn per missing
-    binary (today a missing pandoc surfaces only as a confusing WebFetch error mid-task);
-    optionally ping the server and list available models.
-21. **Tool allow/deny list in config** — `"tools": {"deny": ["WebFetch", "WebSearch"]}` and
-    per-MCP-server enable flags; a natural extension of the existing security model for
-    users who want a file-only agent.
-22. **MCP polish** *(closes MCP L2, L5 + the frozen-toolset limitation)* — send
+17. **Project context file** — auto-load `SVEN.md`/`AGENTS.md` from the cwd into the system
+    prompt; pairs with skills (project rules local, cross-project knowledge in the store).
+18. **One-shot mode + exit codes** — `sven -m "prompt"` for scripting, non-zero exit on
+    backend/tool failure, everything but the answer to stderr when stdout is not a TTY
+    *(closes the stdout-mixing half of L6)*.
+19. **Slash commands** — `/help`, `/tools`, `/model <name>`, `/backend <name>`, `/mcp`,
+    `/retry`, `/undo`.
+20. **Confirmation mode + undo** — y/N before file-modifying tools, optionally with a
+    unified diff; and/or automatic checkpoints before writes with `/undo`.
+21. **Parallel tool execution** — read-only tools via `join_all`; MCP tools are naturally
+    bounded by the per-server mutex.
+22. **Retry with backoff** — one retry on 429/5xx/timeouts handles vLLM cold starts and rate
+    limits.
+23. **Startup doctor** — warn per missing binary (`curl`, `pandoc`, `ddgr`, `man`, `git`,
+    `notify-send`); today a missing pandoc surfaces only as a confusing WebFetch error
+    mid-task.
+24. **Tool allow/deny list in config** — `"tools": {"deny": […]}` plus per-MCP-server enable
+    flags.
+25. **MCP polish** *(closes MCP L2, L5 + the frozen-toolset limitation)* —
     `notifications/cancelled` on timeout; HTTP DELETE on exit; handle
-    `notifications/tools/list_changed` by re-listing and refreshing the registry (the
-    registry already rebuilds definitions on `register`, so this is mostly plumbing).
-23. **Skills auto-injection** — config-gated: at the start of a task, run the existing
-    `search_skills` over the user prompt and prepend the top hit's body to the system
-    prompt. The search already exists; this just wires it in.
-24. **Context-usage indicator** — show `[8.2k/32k]` in the prompt prefix; trivial once
-    feature 1's token accounting exists, and it tells the user when to `/clear`.
-25. **Multi-model routing** (bigger) — a cheap model for tool-call rounds, a strong model
-    for final answers (two entries in `sven.json`, switch on round type). The `Backend`
-    abstraction already separates endpoint/wire-format concerns from the agent loop, so this
-    is a config-shape change more than a code change.
+    `notifications/tools/list_changed` by re-listing.
+26. **Skills auto-injection** — config-gated: search skills over the user prompt, prepend the
+    top hit's body to the system prompt.
+27. **Context-usage indicator** — `[8.2k/32k]` in the prompt prefix; trivial once idea 1's
+    accounting exists.
+28. **Multi-model routing** — cheap model for tool rounds, strong model for final answers;
+    the `Backend` abstraction already separates the concerns.
 
 | # | Idea | Value | Effort | Closes |
 |---|------|-------|--------|--------|
 | 1 | Context management | ★★★ | M | M5 |
 | 2 | CompileTool `Test` | ★★★ | S | L2 |
-| 3 | Token tracking | ★★ | S | L9 |
 | 4 | Timeouts | ★★ | S | M6 |
 | 5 | `col -b` + `LC_ALL=C` | ★★ | S | L3, L11 |
-| 6 | Task queue | ★★ | M | — |
-| 7 | Cross-session history | ★★ | S | — |
-| 8 | touch / replaceline | ★ | S | — |
-| 9 | Git status/log/commit | ★★ | S | L2 (docs) |
-| 14 | Project context file | ★★ | S | — |
-| 15 | One-shot mode + exit codes | ★★ | S | L6 |
-| 17 | Confirm mode + undo | ★★ | M | — |
-| 22 | MCP polish | ★ | S | MCP L2, L5 |
+| 6 | Notification opt-out | ★★ | S | new L1 |
+| 7 | Shared SSE parser | ★ | S | new L2 |
+| 8 | Startup dir + history save | ★★ | S | new L3 |
+| 9 | Task queue | ★★ | M | — |
+| 12 | Git status/log/commit | ★★ | S | r4 L2 |
+| 17 | Project context file | ★★ | S | — |
+| 18 | One-shot mode + exit codes | ★★ | S | L6 |
+| 20 | Confirm mode + undo | ★★ | M | — |
+| 25 | MCP polish | ★ | S | MCP L2, L5 |
 
 ---
 
 ## §7 Priorities
 
-1. **M1** — add the three `#[serde(alias)]` attributes (or fix the three comments) plus the
-   missing serde test; then decide whether `load()` should exit on a malformed config
-   instead of silently defaulting. *Do first — the code currently contradicts its own
-   documentation.*
-2. **M3** — grep exit 1 as "no matches" (`run_allow` helper or match on exit code).
-3. **L1/L4/L5** — three small agent-loop correctness items (double newline, empty assistant
-   message, Ollama mid-stream errors).
-4. **Feature 1 (context management)** — the biggest lever for a local-LLM agent; every
-   other limitation is dwarfed by sessions that quietly degrade after ~a dozen tool rounds.
+1. **Round-4 M1** — three `#[serde(alias)]` attributes (or fix the three comments) plus the
+   missing serde test; then decide whether `load()` should exit on a malformed config instead
+   of silently defaulting. *Still first — it was priority #1 last round and is a few lines.*
+2. **New M1** — validate tool calls before they enter history, so the self-correction loop
+   works on OpenAI/vLLM too; add the interaction test.
+3. **M3** — grep exit 1 as "no matches" (reproduced for the third round running).
+4. **Feature 1 (context management)** — still the biggest lever for a local-LLM agent;
+   `MAX_TOOL_OUTPUT` capped the puddle, the conversation is still the flood.
 5. **Feature 2 + CI** — a `Test` variant and a two-line workflow; no review round has ever
    executed this repo's tests.
-6. **Features 3–5** — small, independent, each closes a carried finding.
-7. **L2/L3/L6 + repo hygiene** — README table/requirements, delete `diff.txt`/`note.html`/
-   `note.md`, mark note2.md item 5 done.
+6. **New L1/L3/L4** — notification opt-out + README sync; create `data_dir` at startup and
+   save history per run; delete `output.txt`/`review.html` and gitignore scratch output.
+7. **The carried long tail** (§1) — none of it requires architectural changes.
 
-Items 1–3 are a few lines each; none require architectural changes.
+Items 1–3 and 6 are small; the only substantial work on this list is item 4.
