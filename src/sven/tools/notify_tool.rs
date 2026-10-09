@@ -6,6 +6,23 @@ use serde::Deserialize;
 use crate::sven::macros::tool;
 use crate::sven::tools::subprocess;
 
+/// The project logo, embedded at compile time so notifications carry the
+/// sven icon no matter where the binary runs from. `notify-send --icon`
+/// takes a filename or icon name, not image bytes, so it is written to a
+/// temp file at send time.
+const LOGO_SVG: &[u8] = include_bytes!("../../../logo.svg");
+
+/// Write the embedded logo to a temp file and return its path.
+///
+/// The file is rewritten on every send: it is ~1.5 KB, and this keeps the
+/// icon correct when a newer binary embeds a newer logo. Returns `None`
+/// if the write fails — a missing icon must not block the notification.
+fn logo_icon_path() -> Option<String> {
+    let path = std::env::temp_dir().join("sven-logo.svg");
+    std::fs::write(&path, LOGO_SVG).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 #[derive(Deserialize, Debug, JsonSchema)]
 struct NotifySendToolParams {
     /// The summary (title) of the notification.
@@ -34,11 +51,12 @@ enum Urgency {
     Critical,
 }
 
-/// Build the `notify-send` invocation for the given parameters.
+/// Build the `notify-send` invocation for the given parameters. `icon`
+/// is the path of the logo temp file, if writing it succeeded.
 ///
 /// Split out from the tool body so the argv layout is unit-testable
 /// without a notification daemon installed.
-fn build_command(params: &NotifySendToolParams) -> Command {
+fn build_command(params: &NotifySendToolParams, icon: Option<String>) -> Command {
     let mut command = Command::new("notify-send");
     if let Some(urgency) = &params.urgency {
         command.arg("--urgency").arg(match urgency {
@@ -52,6 +70,9 @@ fn build_command(params: &NotifySendToolParams) -> Command {
     }
     if let Some(app_name) = &params.app_name {
         command.arg("--app-name").arg(app_name);
+    }
+    if let Some(icon) = icon {
+        command.arg("--icon").arg(icon);
     }
     // `--` stops option parsing: a summary or body starting with `-`
     // (e.g. "-t 5000") must reach notify-send as text, never as one of
@@ -68,7 +89,7 @@ tool!(NotifySendTool, NotifySendToolParams, "Send a desktop notification to the 
     if args.summary.trim().is_empty() {
         return Err("notification summary must not be empty".into());
     }
-    let mut command = build_command(&args);
+    let mut command = build_command(&args, logo_icon_path());
     // notify-send prints nothing on success; `run` still surfaces a
     // non-zero exit (e.g. no notification daemon running) as an error.
     subprocess::run(&mut command).await?;
@@ -101,19 +122,22 @@ mod tests {
     fn dash_leading_summary_lands_after_the_option_terminator() {
         // option-shaped text must reach notify-send as the summary, not
         // as its own options
-        let command = build_command(&params("-t 5000"));
+        let command = build_command(&params("-t 5000"), None);
         assert_eq!(args_of(&command), vec!["--", "-t 5000"]);
     }
 
     #[test]
     fn all_options_are_passed_in_order() {
-        let command = build_command(&NotifySendToolParams {
-            summary: "done".to_string(),
-            body: Some("build finished".to_string()),
-            urgency: Some(Urgency::Critical),
-            expire_time: Some(5000),
-            app_name: Some("sven".to_string()),
-        });
+        let command = build_command(
+            &NotifySendToolParams {
+                summary: "done".to_string(),
+                body: Some("build finished".to_string()),
+                urgency: Some(Urgency::Critical),
+                expire_time: Some(5000),
+                app_name: Some("sven".to_string()),
+            },
+            Some("logo.svg".to_string()),
+        );
         assert_eq!(
             args_of(&command),
             vec![
@@ -123,6 +147,8 @@ mod tests {
                 "5000",
                 "--app-name",
                 "sven",
+                "--icon",
+                "logo.svg",
                 "--",
                 "done",
                 "build finished"
@@ -132,8 +158,22 @@ mod tests {
 
     #[test]
     fn minimal_notification_is_summary_only() {
-        let command = build_command(&params("hello"));
+        let command = build_command(&params("hello"), None);
         assert_eq!(args_of(&command), vec!["--", "hello"]);
+    }
+
+    #[test]
+    fn icon_is_passed_when_available() {
+        let command = build_command(&params("hello"), Some("logo.svg".to_string()));
+        assert_eq!(args_of(&command), vec!["--icon", "logo.svg", "--", "hello"]);
+    }
+
+    #[test]
+    fn logo_is_written_to_a_temp_file() {
+        let path = logo_icon_path().expect("temp dir must be writable");
+        let bytes = std::fs::read(&path).expect("logo temp file must be readable");
+        assert_eq!(bytes, LOGO_SVG);
+        assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"));
     }
 
     // End-to-end through Tool::execute, not just the helpers: this stays
