@@ -6,6 +6,7 @@ pub mod grep_tool;
 pub mod list_files;
 pub mod manpage_tool;
 pub mod mcp_tool;
+pub mod notify_tool;
 pub mod read_tool;
 pub mod skill_tools;
 pub mod subprocess;

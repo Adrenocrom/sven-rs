@@ -16,6 +16,7 @@ use crate::sven::tools::git_tools::GitDiffTool;
 use crate::sven::tools::grep_tool::GrepTool;
 use crate::sven::tools::list_files::ListFiles;
 use crate::sven::tools::manpage_tool::ManPageTool;
+use crate::sven::tools::notify_tool::NotifySendTool;
 use crate::sven::tools::read_tool::ReadTool;
 use crate::sven::tools::skill_tools::{
     AddSkillTool, GetSkillTool, ListSkillsTool, RemoveSkillTool, SearchSkillsTool,
@@ -67,6 +68,7 @@ async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
     registry.register(Box::new(GrepTool));
     registry.register(Box::new(FindTool));
     registry.register(Box::new(ManPageTool));
+    registry.register(Box::new(NotifySendTool));
     registry.register(Box::new(AddSkillTool));
     registry.register(Box::new(UpdateSkillTool));
     registry.register(Box::new(RemoveSkillTool));
