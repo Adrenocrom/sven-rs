@@ -54,6 +54,10 @@ struct Args {
     /// load sven.json from this directory instead of ~/.config/sven
     #[arg(long)]
     config_dir: Option<String>,
+
+    /// print the overall statistics from statistics.json and exit
+    #[arg(long)]
+    stats: bool,
 }
 
 async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
@@ -92,6 +96,7 @@ async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
         options: config.options,
         tool_registry: registry,
         backend: config.backend,
+        data_dir: config.data_dir,
         api_key,
     })
 }
@@ -155,6 +160,11 @@ async fn main() {
     if let Some(host) = args.host {
         config.host = host;
     }
+    // `--stats` only reads statistics.json — no agent, no server needed
+    if args.stats {
+        println!("{}", sven::stats::StatsStore::load(&config.data_dir).summary());
+        return;
+    }
     skills::init_skills_dir(&config.data_dir);
     print_header(&config);
 
@@ -169,6 +179,7 @@ async fn main() {
             match user_prompt.as_str() {
                 "/close" => return,
                 "/clear" => agent.clear(),
+                "/stats" => agent.print_stats(),
                 "" => continue,
                 _ => agent.run(&user_prompt).await,
             }
@@ -193,6 +204,8 @@ async fn main() {
                     break;
                 } else if "/clear".eq(line) {
                     agent.clear();
+                } else if "/stats".eq(line) {
+                    agent.print_stats();
                 } else {
                     agent.run(line).await;
                 }

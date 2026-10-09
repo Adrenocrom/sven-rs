@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod security;
 pub mod security_error;
 pub mod skills;
+pub mod stats;
 pub mod term;
 pub mod tool;
 pub mod tool_registry;

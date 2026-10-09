@@ -37,6 +37,7 @@ cargo run --release -- --backend vllm --model Qwen/Qwen2.5-7B-Instruct --host ht
 | `--prompt`  | REPL prompt prefix (default `>> `)              |
 | `--end-of-prompt` | Non-interactive mode: read stdin until the marker |
 | `--config-dir` | Directory to load `sven.json` from (default `~/.config/sven`) |
+| `--stats` | Print the overall statistics from `statistics.json` and exit |
 
 Flags override the config file; anything not given falls back to `sven.json`
 (or the built-in defaults).
@@ -55,9 +56,23 @@ abbreviated (`15.2K`, `1.6M`):
 run finished in 1m 3s — in 15.2K out 812 tokens (16K total)
 ```
 
+Every run is also recorded in `<data_dir>/statistics.json` — runs, rounds,
+tool calls, tokens and wall time, accumulated across sessions. `/stats`
+prints the overall numbers:
+
+```
+overall statistics — 12 runs since 2026-10-08
+  finished: 11  errors: 1  round caps: 0
+  rounds: 34  tool calls: 57
+  tokens: 15.2K in, 812 out (16K total)
+  time: 20m 34s total, 1m 43s per run
+  last run: 2026-10-09 11:12
+```
+
 | Command  | Effect                          |
 | -------- | ------------------------------- |
 | `/clear` | Reset the conversation history |
+| `/stats` | Show overall statistics from `statistics.json` |
 | `/close` | Exit                            |
 
 Conversation history persists across prompts within a session; `/clear`
@@ -89,8 +104,8 @@ if the file is missing or invalid:
 }
 ```
 
-`data_dir` is where the skills store lives (`<data_dir>/skills`); a leading
-`~` is expanded to `$HOME`.
+`data_dir` is where the skills store (`<data_dir>/skills`), the history and
+`statistics.json` live; a leading `~` is expanded to `$HOME`.
 
 ### Backends
 

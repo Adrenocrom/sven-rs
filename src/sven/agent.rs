@@ -7,6 +7,7 @@ use serde_json::{Value, from_str, json};
 use crate::sven::backend::Backend;
 use crate::sven::chat_history::{ChatHistory, MessageResponse, TokenUsage};
 use crate::sven::config::ChatOptions;
+use crate::sven::stats::{RunOutcome, RunStatus, StatsStore};
 use crate::sven::term;
 use crate::sven::tool::Tool;
 use crate::sven::tool_registry::ToolRegistry;
@@ -98,7 +99,7 @@ fn truncate(output: &str, max: usize) -> String {
 /// Human-readable token count: plain below 1,000, `1.5K` up to a million,
 /// `1.2M` above. One decimal, with a trailing `.0` dropped (`2K`, not
 /// `2.0K`) — the summary line stays short even for long tool-heavy runs.
-fn format_tokens(tokens: u64) -> String {
+pub(crate) fn format_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         tokens.to_string()
     } else if tokens < 1_000_000 {
@@ -121,7 +122,7 @@ fn format_tokens(tokens: u64) -> String {
 /// minute, whole minutes/seconds above (`1.5s`, `2m 3s`, `1h 4m`). The
 /// seconds are rounded before the split so 59m59.9s carries into the
 /// next minute instead of printing "59m 60s".
-fn format_duration(duration: std::time::Duration) -> String {
+pub(crate) fn format_duration(duration: std::time::Duration) -> String {
     let seconds = duration.as_secs_f64();
     if seconds < 60.0 {
         format!("{seconds:.1}s")
@@ -144,6 +145,9 @@ pub struct AgentConfig {
     pub options: ChatOptions,
     pub tool_registry: ToolRegistry,
     pub backend: Backend,
+    /// Where `statistics.json` lives; the agent owns the store so every
+    /// exit path of `run` records the run.
+    pub data_dir: String,
     /// Sent as `Authorization: Bearer …`; only the OpenAI backend uses it.
     pub api_key: Option<String>,
 }
@@ -152,25 +156,29 @@ pub struct Agent {
     client: Client,
     config: AgentConfig,
     history: ChatHistory,
+    stats: StatsStore,
 }
 
 impl Agent {
     pub fn new(agent_config: AgentConfig) -> Agent {
+        let stats = StatsStore::load(&agent_config.data_dir);
         Agent {
             client: Client::new(),
             history: ChatHistory::new(&agent_config.system_prompt),
             config: agent_config,
+            stats,
         }
     }
 
     /// One user prompt → final answer. Wraps the round loop to accumulate
     /// the token usage of every round and measure the wall time until the
     /// run finishes; the summary is printed on every exit path (final
-    /// answer, request error, round cap).
+    /// answer, request error, round cap) and the run is recorded in
+    /// `statistics.json`.
     pub async fn run(&mut self, message: &str) {
         let start = std::time::Instant::now();
         let mut usage = TokenUsage::default();
-        self.run_rounds(message, &mut usage).await;
+        let outcome = self.run_rounds(message, &mut usage).await;
         let elapsed = start.elapsed();
         let summary = format!(
             "run finished in {} — in {} out {} tokens ({} total)",
@@ -180,7 +188,13 @@ impl Agent {
             format_tokens(usage.total())
         );
         println!("{}", term::bold(&summary));
+        self.stats.record_run(&usage, &outcome, elapsed);
         self.notify_finished(elapsed, &summary).await;
+    }
+
+    /// Print the overall statistics accumulated in `statistics.json`.
+    pub fn print_stats(&self) {
+        println!("{}", self.stats.summary());
     }
 
     /// Tell the user the run is over by reusing `NotifySendTool` — the
@@ -209,8 +223,10 @@ impl Agent {
         }
     }
 
-    async fn run_rounds(&mut self, message: &str, usage: &mut TokenUsage) {
+    async fn run_rounds(&mut self, message: &str, usage: &mut TokenUsage) -> RunOutcome {
         self.history.user(message);
+        let mut rounds = 0u64;
+        let mut tool_calls = 0u64;
         for _round in 0..MAX_TOOL_ROUNDS {
             let url = &self.config.backend.endpoint(&self.config.host);
             let mut builder = self.client.post(url).json(&self.request_body());
@@ -226,7 +242,7 @@ impl Agent {
                     // doesn't start with an unanswered prompt
                     self.history.pop_user();
                     eprintln!("error: {}", e);
-                    return;
+                    return RunOutcome { rounds, tool_calls, status: RunStatus::Error };
                 }
             };
 
@@ -238,12 +254,13 @@ impl Agent {
                 let body = response.text().await.unwrap_or_default();
                 self.history.pop_user();
                 eprintln!("error: {} — {}", status, truncate(&body, 500));
-                return;
+                return RunOutcome { rounds, tool_calls, status: RunStatus::Error };
             }
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
             usage.add(&message.usage);
             self.history.assistant(&message);
+            rounds += 1;
             if message.tool_calls.is_empty() {
                 // `length` means the model hit the `max_tokens` cap —
                 // common with reasoning models, whose thinking counts
@@ -260,7 +277,7 @@ impl Agent {
                         )
                     );
                 }
-                return;
+                return RunOutcome { rounds, tool_calls, status: RunStatus::Finished };
             }
             for tool_call in message.tool_calls {
                 let (tool_name, tool_params, tool_call_id) = match parse_tool_call(&tool_call) {
@@ -282,6 +299,7 @@ impl Agent {
                         continue;
                     }
                 };
+                tool_calls += 1;
                 let result = self.process_tool_call(&tool_name, tool_params).await;
                 self.history.tool(&result, &tool_name, tool_call_id.as_deref());
             }
@@ -293,6 +311,7 @@ impl Agent {
         );
         println!("{}", term::red(&note));
         self.history.assistant_note(&note);
+        RunOutcome { rounds, tool_calls, status: RunStatus::RoundCap }
     }
 
     /// Build the chat request body for the configured backend. Ollama
