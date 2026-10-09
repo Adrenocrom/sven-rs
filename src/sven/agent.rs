@@ -188,7 +188,13 @@ impl Agent {
             format_tokens(usage.total())
         );
         println!("{}", term::bold(&summary));
-        self.stats.record_run(&usage, &outcome, elapsed);
+        self.stats.record_run(
+            &self.config.model,
+            &self.config.host,
+            &usage,
+            &outcome,
+            elapsed,
+        );
         self.notify_finished(elapsed, &summary).await;
     }
 

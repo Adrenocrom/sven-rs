@@ -37,7 +37,7 @@ cargo run --release -- --backend vllm --model Qwen/Qwen2.5-7B-Instruct --host ht
 | `--prompt`  | REPL prompt prefix (default `>> `)              |
 | `--end-of-prompt` | Non-interactive mode: read stdin until the marker |
 | `--config-dir` | Directory to load `sven.json` from (default `~/.config/sven`) |
-| `--stats` | Print the overall statistics from `statistics.json` and exit |
+| `--stats` | Print the overall, per-model and per-host statistics from `statistics.json` and exit |
 
 Flags override the config file; anything not given falls back to `sven.json`
 (or the built-in defaults).
@@ -57,8 +57,12 @@ run finished in 1m 3s — in 15.2K out 812 tokens (16K total)
 ```
 
 Every run is also recorded in `<data_dir>/statistics.json` — runs, rounds,
-tool calls, tokens and wall time, accumulated across sessions. `/stats`
-prints the overall numbers:
+tool calls, tokens and wall time, accumulated across sessions. The same
+counters are additionally kept per model and per host, so switching between
+servers or models keeps comparable numbers for each. Each host bucket also
+breaks its runs down per model, so model use per host stays visible.
+`/stats` prints the overall numbers followed by one line per model and per
+host, each host with its models indented underneath:
 
 ```
 overall statistics — 12 runs since 2026-10-08
@@ -67,12 +71,26 @@ overall statistics — 12 runs since 2026-10-08
   tokens: 15.2K in, 812 out (16K total)
   time: 20m 34s total, 1m 43s per run
   last run: 2026-10-09 11:12
+per model:
+  gemma4:12b: 9 runs, 12.1K in, 700 out, 15m 12s
+  qwen:7b: 3 runs, 3.1K in, 112 out, 5m 22s
+per host:
+  http://localhost:11434: 10 runs, 13.5K in, 760 out, 18m 2s
+    gemma4:12b: 9 runs, 12.1K in, 700 out, 15m 12s
+    qwen:7b: 1 runs, 1.4K in, 60 out, 2m 50s
+  http://gpu-box:8000: 2 runs, 1.7K in, 52 out, 2m 32s
+    qwen:7b: 2 runs, 1.7K in, 52 out, 2m 32s
 ```
+
+Files written before per-model/per-host tracking existed still load — the
+totals are kept, the new sections start empty. The same applies to the
+per-model breakdown inside each host: older files keep the host totals and
+start with empty model sections.
 
 | Command  | Effect                          |
 | -------- | ------------------------------- |
 | `/clear` | Reset the conversation history |
-| `/stats` | Show overall statistics from `statistics.json` |
+| `/stats` | Show overall, per-model and per-host statistics from `statistics.json` |
 | `/close` | Exit                            |
 
 Conversation history persists across prompts within a session; `/clear`

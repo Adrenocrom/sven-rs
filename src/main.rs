@@ -55,7 +55,7 @@ struct Args {
     #[arg(long)]
     config_dir: Option<String>,
 
-    /// print the overall statistics from statistics.json and exit
+    /// print the overall, per-model and per-host statistics from statistics.json and exit
     #[arg(long)]
     stats: bool,
 }
