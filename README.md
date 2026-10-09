@@ -48,10 +48,11 @@ stops calling tools.
 
 Each streamed response prints its token counts (`in <prompt> out <completion>`)
 as reported by the server, and when the run finishes a summary line shows the
-accumulated tokens of all rounds and the wall time:
+accumulated tokens of all rounds and the wall time. Counts above 999 are
+abbreviated (`15.2K`, `1.6M`):
 
 ```
-run finished in 1m 3s — in 15234 out 812 tokens (16046 total)
+run finished in 1m 3s — in 15.2K out 812 tokens (16K total)
 ```
 
 | Command  | Effect                          |

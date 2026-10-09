@@ -87,6 +87,28 @@ fn truncate(output: &str, max: usize) -> String {
     truncated
 }
 
+/// Human-readable token count: plain below 1,000, `1.5K` up to a million,
+/// `1.2M` above. One decimal, with a trailing `.0` dropped (`2K`, not
+/// `2.0K`) — the summary line stays short even for long tool-heavy runs.
+fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if tokens < 1_000_000 {
+        let k = tokens as f64 / 1_000.0;
+        let k = format!("{k:.1}");
+        // 999_999 would otherwise round to "1000K"
+        if k == "1000.0" {
+            "1M".to_string()
+        } else {
+            format!("{}K", k.trim_end_matches(".0"))
+        }
+    } else {
+        let m = tokens as f64 / 1_000_000.0;
+        let m = format!("{m:.1}");
+        format!("{}M", m.trim_end_matches(".0"))
+    }
+}
+
 /// Human-readable duration for the run summary: one decimal below a
 /// minute, whole minutes/seconds above (`1.5s`, `2m 3s`, `1h 4m`). The
 /// seconds are rounded before the split so 59m59.9s carries into the
@@ -146,9 +168,9 @@ impl Agent {
             term::bold(&format!(
                 "run finished in {} — in {} out {} tokens ({} total)",
                 format_duration(start.elapsed()),
-                usage.prompt_tokens,
-                usage.completion_tokens,
-                usage.total()
+                format_tokens(usage.prompt_tokens),
+                format_tokens(usage.completion_tokens),
+                format_tokens(usage.total())
             ))
         );
     }
@@ -419,6 +441,17 @@ mod tests {
             format_duration(std::time::Duration::from_millis(3_599_900)),
             "1h 0m"
         );
+    }
+
+    #[test]
+    fn formats_token_counts_readably() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000), "1K");
+        assert_eq!(format_tokens(1_523), "1.5K");
+        assert_eq!(format_tokens(999_999), "1M");
+        assert_eq!(format_tokens(1_000_000), "1M");
+        assert_eq!(format_tokens(1_234_567), "1.2M");
     }
 
     #[test]
