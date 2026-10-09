@@ -98,8 +98,10 @@ resets it.
 
 ## Configuration
 
-sven-rs reads `~/.config/sven/sven.json` and falls back to built-in defaults
-if the file is missing or invalid:
+sven-rs reads `~/.config/sven/sven.json`. If the file is missing, the
+directory is created and the defaults below are written there as a starting
+point to edit; a file that exists but is invalid is reported on stderr and
+left untouched (the built-in defaults are used for that session):
 
 ```json
 {

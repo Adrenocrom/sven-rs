@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, json};
 
 use crate::sven::{agent::StreamState, term};
@@ -12,7 +12,7 @@ use crate::sven::{agent::StreamState, term};
 /// — the same strings `ToString` emits. The capitalized forms the
 /// un-annotated enum used to require are kept as aliases so config files
 /// written before the rename keep parsing.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
     Ollama,

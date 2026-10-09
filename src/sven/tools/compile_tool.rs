@@ -22,7 +22,7 @@ struct CompileToolParams {
 async fn compile_rust() -> Result<String, Box<dyn std::error::Error>> {
     let mut command = Command::new("cargo");
     command.arg("build");
-    Ok(subprocess::run(&mut command).await?)
+    Ok(subprocess::run_stderr(&mut command).await?)
 }
 
 async fn compile_uefi_rust() -> Result<String, Box<dyn std::error::Error>> {
@@ -30,7 +30,7 @@ async fn compile_uefi_rust() -> Result<String, Box<dyn std::error::Error>> {
     command.arg("build");
     command.arg("--release");
     command.arg("--target=x86_64-unknown-uefi");
-    Ok(subprocess::run(&mut command).await?)
+    Ok(subprocess::run_stderr(&mut command).await?)
 }
 
 async fn compile_java() -> Result<String, Box<dyn std::error::Error>> {

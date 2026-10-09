@@ -23,6 +23,26 @@ pub async fn run(command: &mut Command) -> Result<String, Box<dyn std::error::Er
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run `command` to completion and return its stderr.
+///
+/// A non-zero exit status is an error that includes the program name, the
+/// status and stderr — without this, a failing program (bad regex, missing
+/// directory, HTTP 404) is indistinguishable from "no output", and the
+/// model would confidently build on a broken result.
+pub async fn run_stderr(command: &mut Command) -> Result<String, Box<dyn std::error::Error>> {
+    let out = command.output().await?;
+    if !out.status.success() {
+        return Err(format!(
+            "{} exited with {}: {}",
+            command.as_std().get_program().to_string_lossy(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
 /// Return `path` in a form the called program reads as an operand, never
 /// as one of its own options.
 ///
