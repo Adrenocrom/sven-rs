@@ -265,7 +265,9 @@ impl Agent {
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
             usage.add(&message.usage);
-            self.history.assistant(&message);
+            if !message.content.is_empty() {
+                self.history.assistant(&message);
+            }
             rounds += 1;
             if message.tool_calls.is_empty() {
                 // `length` means the model hit the `max_tokens` cap —
