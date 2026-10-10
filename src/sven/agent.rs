@@ -419,7 +419,7 @@ impl Agent {
     pub async fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
-                println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), truncate(&params.to_string(), MAX_TOOL_PARAMS_OUTPUT));
+                println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), &params.to_string());
                 match tool.execute(params).await {
                     Ok(result) => result,
                     Err(err) => {
