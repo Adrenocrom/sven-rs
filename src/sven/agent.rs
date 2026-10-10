@@ -20,7 +20,9 @@ const MAX_TOOL_ROUNDS: usize = 250;
 /// Maximum characters of a tool result kept in the conversation. Larger
 /// outputs are truncated so a single tool (e.g. a full man page) cannot
 /// flood the model's context window.
-const MAX_TOOL_OUTPUT: usize = 10_000;
+const MAX_TOOL_OUTPUT: usize = 10_0000;
+
+const MAX_TOOL_PARAMS_OUTPUT: usize = 80;
 
 /// A run longer than this is notified with critical urgency: most
 /// daemons (GNOME Shell, Notify OSD) keep critical notifications on
@@ -417,7 +419,7 @@ impl Agent {
     pub async fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
-                println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), params);
+                println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), truncate(&params.to_string(), MAX_TOOL_PARAMS_OUTPUT));
                 match tool.execute(params).await {
                     Ok(result) => result,
                     Err(err) => {
