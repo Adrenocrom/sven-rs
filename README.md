@@ -3,8 +3,9 @@
 A terminal coding agent for local LLMs, written in Rust. sven-rs talks to any
 Ollama-compatible server via the streaming `POST /api/chat` API and gives the
 model a set of tools so it can act on your workspace — read and edit files,
-search the codebase, look up man pages, fetch web pages — and a persistent
-skill store so knowledge learned in one session is available in the next.
+search the codebase, look up man pages, fetch web pages, show git diffs,
+send desktop notifications — and a persistent skill store so knowledge
+learned in one session is available in the next.
 
 ## Requirements
 
@@ -13,7 +14,9 @@ skill store so knowledge learned in one session is available in the next.
   **OpenAI-compatible server** — OpenAI, vLLM, LM Studio, OpenRouter, … — via
   the `backend` config field (see below).
 - External binaries used by the tools: `curl` + `pandoc` (web fetch), `ddgr`
-  (web search), `man`, `grep`, `find`, `ls`.
+  (web search), `man`, `grep`, `find`, `ls`, `git` (diff tool), `notify-send`
+  (desktop notifications), plus the build tool of whichever language you ask
+  `CompileTool` to check (`cargo`, `mvn`, `dotnet` or `python`).
 
 ## Usage
 
@@ -43,9 +46,11 @@ Flags override the config file; anything not given falls back to `sven.json`
 (or the built-in defaults).
 
 At the prompt, type your message and press Enter. The model streams its
-thinking (rendered in green) and its answer inline; tool calls are printed
-with a 🔧 as they execute, and their results are fed back to the model until it
-stops calling tools.
+thinking (rendered in a dim color — green for Ollama, blue for OpenAI,
+magenta for vLLM) and its answer inline; tool calls are printed with a 🔧
+as they execute, and their results are fed back to the model until it
+stops calling tools. Very large tool results are truncated before they are
+fed back (the model sees an `… [output truncated]` marker).
 
 Each streamed response prints its token counts (`in <prompt> out <completion>`)
 as reported by the server, and when the run finishes a summary line shows the
@@ -55,6 +60,15 @@ abbreviated (`15.2K`, `1.6M`):
 ```
 run finished in 1m 3s — in 15.2K out 812 tokens (16K total)
 ```
+
+When a run finishes, a desktop notification is sent via `notify-send` —
+titled `Sven: run finished`, with the summary line as its body and the sven
+logo as the icon. Runs longer than three minutes are sent with critical
+urgency, which most notification daemons keep on screen until dismissed
+instead of fading out. This happens after every run — including errored
+ones, and once per prompt in non-interactive mode. If no notification
+daemon is running, the failure is only reported on stderr; the run itself
+is unaffected.
 
 Every run is also recorded in `<data_dir>/statistics.json` — runs, rounds,
 tool calls, tokens and wall time, accumulated across sessions. The same
@@ -112,7 +126,9 @@ left untouched (the built-in defaults are used for that session):
   "system_prompt": "",
   "options": {
     "temperature": 0.1,
-    "num_ctx": 32000
+    "num_ctx": 32000,
+    "max_tokens": 32000,
+    "num_predict": 16000
   },
   "mcp_servers": {
     "github": {
@@ -126,6 +142,13 @@ left untouched (the built-in defaults are used for that session):
 
 `data_dir` is where the skills store (`<data_dir>/skills`), the history and
 `statistics.json` live; a leading `~` is expanded to `$HOME`.
+
+The `options` travel with each request: `temperature` applies to every
+backend; `num_ctx` (the context window) and `num_predict` (an output cap)
+are Ollama-only; `max_tokens` is the output cap of the OpenAI-compatible
+backends (`openai`, `vllm`) — Ollama ignores it, and the OpenAI-compatible
+servers ignore `num_ctx` and `num_predict`. Fields missing from the config
+file fall back to the defaults shown above.
 
 ### Backends
 
@@ -244,7 +267,9 @@ Behavior worth knowing:
 | `ManPageTool`          | Display a man page                                  |
 | `WebSearch`            | DuckDuckGo search via `ddgr`                        |
 | `WebFetch`            | GET a URL (http/https only), converted HTML → Markdown via `pandoc` |
-| `CompileTool`          | Run `cargo build` and report errors                  |
+| `CompileTool`          | Compile the project to check for errors (Rust, UEFI Rust, Java, .NET, Python) |
+| `GitDiffTool`          | Show the workspace's unstaged changes (`git diff .`) |
+| `NotifySendTool`       | Send a desktop notification via `notify-send`       |
 | `ListSkillsTool`       | List all stored skills with name, description, tags |
 | `SearchSkillsTool`     | Keyword search over skills (name, description, tags, body) |
 | `GetSkillTool`         | Read a skill's full content                         |
@@ -313,6 +338,8 @@ path-confinement check used by the file tools.
 - `src/sven/term.rs` — ANSI colors, gated on TTY and `NO_COLOR`.
 - `src/sven/skills.rs` — skill store: minimal YAML frontmatter parser,
   SKILL.md serialization, keyword search.
+- `src/sven/stats.rs` — lifetime run statistics (`statistics.json`):
+  per-run recording, per-model and per-host buckets, the `/stats` summary.
 - `src/sven/tools/*` — one file per tool; `subprocess.rs` holds the shared
   exit-status/stderr-aware command runner.
 

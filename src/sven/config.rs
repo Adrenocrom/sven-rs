@@ -14,15 +14,20 @@ use crate::sven::backend::Backend;
 pub struct ChatOptions {
     pub temperature: f32,
     pub num_ctx: Option<i32>,
-    pub max_tokens: Option<i32>
+    pub max_tokens: Option<i32>,
+    pub num_predict: Option<i32>
 }
 
 impl Default for ChatOptions {
     fn default() -> Self {
+        let num_ctx = 32000;
+        let max_tokens = num_ctx;
+        let num_predict = num_ctx / 2;
         Self {
             temperature: 0.1,
-            num_ctx: Some(32000),
-            max_tokens: None,
+            num_ctx: Some(num_ctx),
+            max_tokens: Some(max_tokens),
+            num_predict: Some(num_predict)
         }
     }
 }
