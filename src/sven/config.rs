@@ -21,12 +21,11 @@ pub struct ChatOptions {
 impl Default for ChatOptions {
     fn default() -> Self {
         let num_ctx = 32000;
-        let num_predict = num_ctx / 2;
         Self {
             temperature: 0.1,
             num_ctx: Some(num_ctx),
             max_tokens: None,
-            num_predict: Some(num_predict)
+            num_predict: None
         }
     }
 }
