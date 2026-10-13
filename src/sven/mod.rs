@@ -6,6 +6,7 @@ pub mod macros;
 pub mod mcp;
 pub mod security;
 pub mod security_error;
+pub mod sse;
 pub mod skills;
 pub mod stats;
 pub mod term;

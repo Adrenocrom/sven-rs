@@ -27,6 +27,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::sven::config::McpServerConfig;
+use crate::sven::sse::parse_sse;
 
 /// Time budget for `initialize` and `tools/list`. Generous on purpose:
 /// `npx`/`uvx`-based servers download their package on the first start.
@@ -409,35 +410,6 @@ impl Transport for HttpTransport {
 
 // -------------------------------------------------------------- parsing
 
-/// Parse an SSE body into the JSON messages of its `data:` frames.
-/// Events end at blank lines; multi-line `data:` fields are joined with
-/// newlines per the SSE spec; a trailing frame that does not parse (a
-/// stream cut off by the timeout) is skipped.
-fn parse_sse(body: &str) -> Vec<Value> {
-    fn flush(data: &mut Vec<String>, messages: &mut Vec<Value>) {
-        if data.is_empty() {
-            return;
-        }
-        let joined = std::mem::take(data).join("\n");
-        if let Ok(message) = serde_json::from_str::<Value>(&joined) {
-            messages.push(message);
-        }
-    }
-    let mut messages = Vec::new();
-    let mut data: Vec<String> = Vec::new();
-    for line in body.lines() {
-        if line.is_empty() {
-            flush(&mut data, &mut messages);
-        } else if let Some(payload) = line.strip_prefix("data:") {
-            // one optional space after the colon per the SSE spec
-            data.push(payload.strip_prefix(' ').unwrap_or(payload).to_string());
-        }
-        // `event:`, `id:`, `retry:` lines and `:comments` are ignored
-    }
-    flush(&mut data, &mut messages);
-    messages
-}
-
 /// Cap an error body so a misconfigured URL pointing at a huge page
 /// cannot flood the terminal.
 fn shorten(text: &str, max_chars: usize) -> String {
@@ -493,23 +465,6 @@ impl Transport for MockTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn parses_sse_frames() {
-        let body = "event: message\ndata: {\"id\":1}\n\ndata: {\"id\":2}\n\n";
-        let messages = parse_sse(body);
-        assert_eq!(messages, vec![json!({"id": 1}), json!({"id": 2})]);
-
-        // multi-line data is joined with newlines (JSON tolerates the
-        // whitespace between the tokens)
-        let messages = parse_sse("data: {\"a\":\ndata: 1}\n\n");
-        assert_eq!(messages, vec![json!({"a": 1})]);
-
-        // comments and non-data lines are ignored, a trailing frame cut
-        // off mid-JSON is skipped
-        assert!(parse_sse(": keepalive\ndata: {\"id\"").is_empty());
-        assert!(parse_sse("data: not json\n\n").is_empty());
-    }
+    // the SSE parser and its tests moved to `sse.rs`; the transport
+    // itself is covered by the mock-based tests in `mod.rs`
 }

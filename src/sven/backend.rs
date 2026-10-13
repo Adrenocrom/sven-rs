@@ -209,35 +209,62 @@ impl Backend {
         matches!(self, Backend::OpenAI | Backend::Vllm)
     }
 
-    pub fn process_line(&self, stream_state: &mut StreamState, line: &str) -> Result<(), serde_json::Error> {
-        //println!("\x1b[33m {}\x1b[0m", &line);
+    /// Apply one line of the response stream. The OpenAI-compatible
+    /// backends speak SSE: the line goes into the parser in
+    /// `stream_state`, and a payload comes out only when the line's
+    /// blank terminator ends an event — so a chunk is applied exactly
+    /// once no matter how its `data:` fields were split. Ollama
+    /// streams newline-delimited JSON and decodes each line directly.
+    /// Lines that do not decode are skipped with a warning — one bad
+    /// chunk must not kill the whole response.
+    pub fn process_line(&self, stream_state: &mut StreamState, line: &str) {
         match self {
             Backend::Ollama => {
-                let json = from_str::<Value>(&line)?;
-                process_json_ollama(stream_state, &json);
-                Ok(())
+                if line.is_empty() {
+                    return;
+                }
+                match from_str::<Value>(line) {
+                    Ok(json) => process_json_ollama(stream_state, &json),
+                    Err(e) => {
+                        eprintln!("... couldn't decode JSON: {}", e);
+                        eprintln!("... skipping line {:?}", line);
+                    }
+                }
             },
             Backend::OpenAI | Backend::Vllm => {
-                if line.eq("data: [DONE]") {
-                    return Ok(());
+                if let Some(payload) = stream_state.sse.line(line) {
+                    self.process_event(stream_state, &payload);
                 }
-                let Some(payload) = line.strip_prefix("data: ") else {
-                    // SSE comments (": keep-alive") and empty lines are
-                    // skipped; anything else is not a data event
-                    return Ok(());
-                };
-                let json = from_str::<Value>(payload)?;
-                process_json_openai(&self, stream_state, &json);
-                Ok(())
+            }
+        }
+    }
+
+    /// Decode and apply one completed SSE event payload. A payload that
+    /// is not JSON is skipped with a warning instead of an error — a
+    /// frame cut off mid-stream is noise, not a fatal error (the MCP
+    /// transport skips such frames silently).
+    fn process_event(&self, stream_state: &mut StreamState, payload: &str) {
+        if payload.is_empty() || payload == "[DONE]" {
+            return;
+        }
+        match from_str::<Value>(payload) {
+            Ok(json) => process_json_openai(&self, stream_state, &json),
+            Err(e) => {
+                eprintln!("... couldn't decode JSON: {}", e);
+                eprintln!("... skipping event {:?}", payload);
             }
         }
     }
 
     /// Called once the stream ended. OpenAI-style tool calls are only
     /// complete now that all argument fragments arrived; Ollama sends
-    /// complete calls and has nothing to do.
+    /// complete calls and has nothing to do. A trailing SSE event whose
+    /// closing blank line never arrived is flushed first.
     pub fn finalize(&self, stream_state: &mut StreamState) {
         if self.is_openai_compatible() {
+            if let Some(payload) = stream_state.sse.flush() {
+                self.process_event(stream_state, &payload);
+            }
             let fragments = std::mem::take(&mut stream_state.tool_call_fragments);
             stream_state.tool_calls.extend(fragments.into_values());
         }
@@ -291,13 +318,25 @@ mod tests {
         assert!("llamacpp".parse::<Backend>().is_err());
     }
 
+    /// Feed each payload as one complete SSE event — a `data:` line
+    /// followed by the blank line that ends the event — the way a real
+    /// server sends them and `handle_chunks` delivers them.
+    fn feed_events(backend: &Backend, state: &mut StreamState, payloads: &[&str]) {
+        for payload in payloads {
+            backend.process_line(state, &format!("data: {}", payload));
+            backend.process_line(state, "");
+        }
+    }
+
     fn state_with_fragments() -> StreamState {
         let mut state = StreamState::default();
         let backend = Backend::OpenAI;
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ReadTool","arguments":""}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"src/main.rs\"}"}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, "data: [DONE]").unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ReadTool","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"src/main.rs\"}"}}]}}]}"#,
+            "[DONE]",
+        ]);
         backend.finalize(&mut state);
         state
     }
@@ -326,10 +365,12 @@ mod tests {
     fn parallel_openai_tool_calls_stay_separate() {
         let mut state = StreamState::default();
         let backend = Backend::OpenAI;
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"TimeTool","arguments":""}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"ListFiles","arguments":""}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}"#).unwrap();
-        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}"#).unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"TimeTool","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"ListFiles","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}"#,
+        ]);
         backend.finalize(&mut state);
         assert_eq!(state.tool_calls.len(), 2);
         assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
@@ -340,7 +381,7 @@ mod tests {
     fn ollama_tool_calls_are_complete_without_finalize() {
         let mut state = StreamState::default();
         let backend = Backend::Ollama;
-        backend.process_line(&mut state, r#"{"message":{"tool_calls":[{"function":{"name":"TimeTool","arguments":{}}}]},"done":true}"#).unwrap();
+        backend.process_line(&mut state, r#"{"message":{"tool_calls":[{"function":{"name":"TimeTool","arguments":{}}}]},"done":true}"#);
         backend.finalize(&mut state);
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(state.tool_calls[0]["function"]["name"], "TimeTool");
@@ -350,9 +391,45 @@ mod tests {
     fn sse_comment_lines_are_skipped() {
         let mut state = StreamState::default();
         let backend = Backend::OpenAI;
-        backend.process_line(&mut state, ": keep-alive").unwrap();
-        backend.process_line(&mut state, "").unwrap();
+        backend.process_line(&mut state, ": keep-alive");
+        backend.process_line(&mut state, "");
         assert!(state.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn sse_data_without_space_after_colon_is_parsed() {
+        // `data:{"json"}` — no space after the colon — is legal SSE and
+        // was dropped by the old `strip_prefix("data: ")` parser
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend.process_line(&mut state, r#"data:{"choices":[{"delta":{"content":"hi"}}]}"#);
+        backend.process_line(&mut state, "");
+        assert_eq!(state.content, "hi");
+    }
+
+    #[test]
+    fn sse_payload_split_across_data_lines_is_joined() {
+        // a payload split across several `data:` lines is joined with a
+        // newline per the SSE spec; the old parser decoded each line
+        // separately and dropped both. The split is between JSON tokens
+        // — a newline inside a string literal would be invalid JSON.
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"#);
+        backend.process_line(&mut state, r#"data: "content":"hello"}}]}"#);
+        backend.process_line(&mut state, "");
+        assert_eq!(state.content, "hello");
+    }
+
+    #[test]
+    fn trailing_event_without_blank_line_is_flushed() {
+        // a stream can end without the closing blank line of its last
+        // event; `finalize` flushes it instead of losing the chunk
+        let mut state = StreamState::default();
+        let backend = Backend::OpenAI;
+        backend.process_line(&mut state, r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#);
+        backend.finalize(&mut state);
+        assert_eq!(state.content, "hi");
     }
 
     #[test]
@@ -360,20 +437,14 @@ mod tests {
         let mut state = StreamState::default();
         let backend = Backend::OpenAI;
         // regular chunks carry finish_reason: null
-        backend
-            .process_line(
-                &mut state,
-                r#"data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#,
-            )
-            .unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#,
+        ]);
         assert_eq!(state.finish_reason, None);
         // the final chunk carries the actual reason
-        backend
-            .process_line(
-                &mut state,
-                r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
-            )
-            .unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+        ]);
         assert_eq!(state.finish_reason.as_deref(), Some("length"));
     }
 
@@ -381,12 +452,9 @@ mod tests {
     fn mid_stream_error_object_is_reported() {
         let mut state = StreamState::default();
         let backend = Backend::OpenAI;
-        backend
-            .process_line(
-                &mut state,
-                r#"data: {"error":{"message":"context length exceeded","type":"server_error"}}"#,
-            )
-            .unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"error":{"message":"context length exceeded","type":"server_error"}}"#,
+        ]);
         // the error chunk carries no choices — nothing is accumulated
         assert!(state.content.is_empty());
         assert!(state.tool_calls.is_empty());
@@ -399,22 +467,14 @@ mod tests {
         // --reasoning-parser), tool calls fragmented by `index`.
         let mut state = StreamState::default();
         let backend = Backend::Vllm;
-        backend
-            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking..."},"finish_reason":null}]}"#)
-            .unwrap();
-        backend
-            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#)
-            .unwrap();
-        backend
-            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-1","type":"function","function":{"name":"TimeTool","arguments":""}}]},"finish_reason":null}]}"#)
-            .unwrap();
-        backend
-            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}"#)
-            .unwrap();
-        backend
-            .process_line(&mut state, r#"data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#)
-            .unwrap();
-        backend.process_line(&mut state, "data: [DONE]").unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking..."},"finish_reason":null}]}"#,
+            r#"{"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#,
+            r#"{"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-1","type":"function","function":{"name":"TimeTool","arguments":""}}]},"finish_reason":null}]}"#,
+            r#"{"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}"#,
+            r#"{"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            "[DONE]",
+        ]);
         backend.finalize(&mut state);
 
         assert_eq!(state.content, "hello");
@@ -432,12 +492,9 @@ mod tests {
         // stream_options: {"include_usage": true} — as sent by vLLM
         let mut state = StreamState::default();
         let backend = Backend::Vllm;
-        backend
-            .process_line(
-                &mut state,
-                r#"data: {"id":"chatcmpl-8bfb9d6ad14a3f56","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":77,"prompt_tokens":2289,"total_tokens":2366,"completion_tokens_details":{"reasoning_tokens":20}}}"#,
-            )
-            .unwrap();
+        feed_events(&backend, &mut state, &[
+            r#"{"id":"chatcmpl-8bfb9d6ad14a3f56","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":77,"prompt_tokens":2289,"total_tokens":2366,"completion_tokens_details":{"reasoning_tokens":20}}}"#,
+        ]);
         // the usage chunk carries no content and no finish_reason —
         // nothing is accumulated, the token line is just printed
         assert!(state.content.is_empty());
@@ -455,8 +512,7 @@ mod tests {
             .process_line(
                 &mut state,
                 r#"{"message":{"content":"hi"},"done":true,"prompt_eval_count":42,"eval_count":7}"#,
-            )
-            .unwrap();
+            );
         assert_eq!(state.usage.prompt_tokens, 42);
         assert_eq!(state.usage.completion_tokens, 7);
     }

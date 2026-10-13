@@ -7,6 +7,7 @@ use serde_json::{Value, from_str, json};
 use crate::sven::backend::Backend;
 use crate::sven::chat_history::{ChatHistory, MessageResponse, TokenUsage};
 use crate::sven::config::ChatOptions;
+use crate::sven::sse::SseParser;
 use crate::sven::stats::{RunOutcome, RunStatus, StatsStore};
 use crate::sven::term;
 use crate::sven::tool::Tool;
@@ -50,6 +51,11 @@ pub struct StreamState {
     /// sends them on the done chunk, OpenAI-compatible servers in a
     /// final `usage` chunk; servers that report nothing leave it at 0.
     pub usage: TokenUsage,
+    /// SSE event accumulator for the OpenAI-compatible backends: the
+    /// `data:` lines of the event currently being assembled, joined
+    /// into a payload when the blank line ends the event. Ollama
+    /// streams newline-delimited JSON and never touches this.
+    pub sse: SseParser,
 }
 
 /// Extract (name, arguments, id) from a tool-call payload. Local models
@@ -376,14 +382,10 @@ impl Agent {
                 let line: Vec<u8> = buffer.drain(..=pos).collect();
                 let line = String::from_utf8_lossy(&line[..pos]);
                 let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-
-                if let Err(e) = self.config.backend.process_line(&mut state, line) {
-                    eprintln!("... couldn't decode JSON: {}", e);
-                    eprintln!("... skipping line {:?}", line);
-                }
+                // blank lines are passed on: they end SSE events for
+                // the OpenAI-compatible backends, the Ollama branch
+                // ignores them
+                self.config.backend.process_line(&mut state, line);
             }
 
             let _ = std::io::stdout().flush();
@@ -395,15 +397,13 @@ impl Agent {
             let line = String::from_utf8_lossy(&buffer);
             let line = line.trim();
             if !line.is_empty() {
-                if let Err(e) = self.config.backend.process_line(&mut state, line) {
-                    eprintln!("... couldn't decode JSON: {}", e);
-                    eprintln!("... skipping line {:?}", line);
-                }
+                self.config.backend.process_line(&mut state, line);
             }
         }
 
         // OpenAI tool calls are only complete now that every fragment
-        // arrived; Ollama calls were already complete
+        // arrived, and a trailing SSE event without its closing blank
+        // line is flushed; Ollama calls were already complete
         self.config.backend.finalize(&mut state);
 
         MessageResponse {
