@@ -21,7 +21,7 @@ const MAX_TOOL_ROUNDS: usize = 250;
 /// Maximum characters of a tool result kept in the conversation. Larger
 /// outputs are truncated so a single tool (e.g. a full man page) cannot
 /// flood the model's context window.
-const MAX_TOOL_OUTPUT: usize = 35_0000;
+const MAX_TOOL_OUTPUT: usize = 35_000;
 //
 //const MAX_TOOL_PARAMS_OUTPUT: usize = 80;
 
