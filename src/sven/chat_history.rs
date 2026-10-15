@@ -147,6 +147,20 @@ impl ChatHistory {
         self.tool_history.push(entry);
     }
 
+    /// Remove every attachment from the stored messages — each stripped
+    /// message gets a note, so the model learns the media was mentioned
+    /// but never delivered (see `Backend::strip_message_attachments`).
+    /// Returns whether anything was removed: the caller retries the
+    /// request only then, so a persistent error fails the run instead
+    /// of looping.
+    pub fn strip_attachments(&mut self) -> bool {
+        let mut stripped = false;
+        for message in self.history.iter_mut().chain(self.tool_history.iter_mut()) {
+            stripped |= self.backend.strip_message_attachments(message);
+        }
+        stripped
+    }
+
     /// Append a plain assistant message to the current tool round (used
     /// for the round-cap notice), keeping chronological order with the
     /// surrounding tool messages.
@@ -352,5 +366,37 @@ mod tests {
         assert!(content.contains("image"), "{}", content);
         assert!(content.contains("not visible"), "{}", content);
         assert!(tool_message.get("images").is_none());
+    }
+
+    #[test]
+    fn strip_attachments_removes_media_and_notes_the_model() {
+        // OpenAI: the content parts collapse back to the plain prompt,
+        // with a note naming the dropped modality
+        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        history.user("look at this", &[image()]);
+        history.user("plain", &[]);
+        assert!(history.strip_attachments());
+        let messages = history.get();
+        let stripped = messages[1];
+        assert!(stripped.get("content").unwrap().is_string());
+        let content = stripped["content"].as_str().unwrap();
+        assert!(content.starts_with("look at this"), "{}", content);
+        assert!(content.contains("image attachment(s) removed"), "{}", content);
+        // the plain message is untouched
+        assert_eq!(messages[2]["content"], "plain");
+
+        // nothing left to strip → false, so the caller does not retry
+        assert!(!history.strip_attachments());
+
+        // Ollama: the images array is removed, the note is appended
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("look at this", &[image()]);
+        assert!(history.strip_attachments());
+        let messages = history.get();
+        let stripped = messages.last().unwrap();
+        assert!(stripped.get("images").is_none());
+        let content = stripped["content"].as_str().unwrap();
+        assert!(content.starts_with("look at this"), "{}", content);
+        assert!(content.contains("image attachment(s) removed"), "{}", content);
     }
 }

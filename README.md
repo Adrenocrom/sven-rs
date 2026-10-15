@@ -79,6 +79,15 @@ Ollama the media rides inside the tool result message itself; on the
 OpenAI-compatible backends, whose tool-message format has no binary
 parts, the model is told the tool produced media it cannot see.
 
+That matrix describes the *protocol*; whether the **model** can actually
+see a modality only the server knows. A text-only model (DeepSeek, plain
+Llama, …) behind any backend rejects the whole request — litellm in
+front of vLLM answers `400 this model does not support image input`.
+When that happens, sven strips the attachment, appends a note so the
+model knows the file was mentioned but never delivered, and retries
+once — the model will tell you it cannot see the image instead of the
+run dying with the error.
+
 Each streamed response prints its token counts (`in <prompt> out <completion>`)
 as reported by the server, and when the run finishes a summary line shows the
 accumulated tokens of all rounds and the wall time. Counts above 999 are

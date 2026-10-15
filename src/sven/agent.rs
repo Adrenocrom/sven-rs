@@ -94,6 +94,19 @@ pub(crate) fn parse_tool_call(tool_call: &Value) -> Result<(String, Value, Optio
     Ok((name.to_string(), arguments, id))
 }
 
+/// Whether an error body means the *model* cannot take a modality as
+/// input — the request was well-formed, the model is just text-only.
+/// Servers phrase this differently (litellm/vLLM: "this model does not
+/// support image input"; Ollama: "… does not support images"), so the
+/// check matches the shape, not an exact string.
+pub(crate) fn is_unsupported_modality_error(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("does not support")
+        && ["image", "audio", "video", "multimodal"]
+            .iter()
+            .any(|word| body.contains(word))
+}
+
 /// Cap `output` at `max` characters (not bytes — the cut must not split a
 /// character), marking the cut so the model knows it was shortened.
 fn truncate(output: &str, max: usize) -> String {
@@ -282,6 +295,21 @@ impl Agent {
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
+                // A text-only model rejects the whole request when it
+                // carries media — the support matrix knows the wire
+                // format, but only the server knows what the model
+                // accepts. Strip the attachments (each stripped message
+                // gets a note, so the model learns the file was mentioned
+                // but never delivered) and retry. `strip_attachments`
+                // reports whether anything was left to strip, so an error
+                // that persists fails the run instead of looping.
+                if is_unsupported_modality_error(&body) && self.history.strip_attachments() {
+                    eprintln!(
+                        "... {} — retrying without attachments",
+                        truncate(&body, 200)
+                    );
+                    continue;
+                }
                 self.history.pop_user();
                 eprintln!("error: {} — {}", status, truncate(&body, 500));
                 return RunOutcome { rounds, tool_calls, status: RunStatus::Error };
@@ -508,6 +536,25 @@ mod tests {
         assert!(parse_tool_call(&json!({"function": {"name": 42}})).is_err());
         assert!(parse_tool_call(&json!({"function": {"arguments": {}}})).is_err());
         assert!(parse_tool_call(&json!({"function": {"name": "X", "arguments": "not json"}})).is_err());
+    }
+
+    #[test]
+    fn recognizes_unsupported_modality_errors_by_shape() {
+        // litellm in front of vLLM
+        assert!(is_unsupported_modality_error(
+            r#"{"error":"this model does not support image input (ref: 82f5a36c-676c-4770-b590-e4e008c2239f)"}"#
+        ));
+        // Ollama's phrasing
+        assert!(is_unsupported_modality_error(
+            r#"{"error":"model 'llama3' does not support images"}"#
+        ));
+        // audio and video variants
+        assert!(is_unsupported_modality_error("this model does not support audio input"));
+        assert!(is_unsupported_modality_error("model does not support video input"));
+        // unrelated errors must not trigger a pointless retry
+        assert!(!is_unsupported_modality_error(r#"{"error":"model not found"}"#));
+        assert!(!is_unsupported_modality_error("context length exceeded"));
+        assert!(!is_unsupported_modality_error(""));
     }
 
     #[test]

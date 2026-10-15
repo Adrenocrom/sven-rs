@@ -285,6 +285,70 @@ impl Backend {
         }
     }
 
+    /// Remove the attachments from one stored message, appending a note
+    /// to its text where media was dropped. Returns whether the message
+    /// carried any — the caller retries only then, so an error that
+    /// persists fails the run instead of looping.
+    ///
+    /// Used when the server rejects a request because the *model* (not
+    /// the wire format) cannot take a modality as input — a text-only
+    /// model behind any backend answers 400 "this model does not
+    /// support image input". `supports_attachment` cannot know that;
+    /// only the server can.
+    pub fn strip_message_attachments(&self, message: &mut Value) -> bool {
+        let mut kinds: Vec<&'static str> = Vec::new();
+        match self {
+            Backend::Ollama => {
+                if message.get("images").is_some() {
+                    if let Some(object) = message.as_object_mut() {
+                        object.remove("images");
+                    }
+                    kinds.push("image");
+                }
+            }
+            Backend::OpenAI | Backend::Vllm => {
+                // only messages with attachments have array content —
+                // `apply_user_attachments` builds it, with the text
+                // part first, so joining the text parts restores the
+                // plain prompt
+                let Some(parts) = message.get("content").and_then(Value::as_array).cloned() else {
+                    return false;
+                };
+                for part in &parts {
+                    match part["type"].as_str() {
+                        Some("image_url") => kinds.push("image"),
+                        Some("input_audio") | Some("audio_url") => kinds.push("audio"),
+                        Some("video_url") => kinds.push("video"),
+                        _ => {}
+                    }
+                }
+                if kinds.is_empty() {
+                    return false;
+                }
+                let text: Vec<&str> = parts
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                message["content"] = json!(text.join("\n"));
+            }
+        }
+        if kinds.is_empty() {
+            return false;
+        }
+        kinds.sort_unstable();
+        kinds.dedup();
+        let kinds = kinds.join(", ");
+        let content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        message["content"] = json!(format!(
+            "{content}\n[{kinds} attachment(s) removed: this model does not support {kinds} input]"
+        ));
+        true
+    }
+
     /// One OpenAI-compatible content part for an attachment. Images are
     /// data URIs in both; audio differs — OpenAI's `input_audio` takes
     /// raw base64 plus a `format`, vLLM's `audio_url` a data URI — and
