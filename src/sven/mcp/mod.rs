@@ -397,7 +397,10 @@ fn content_parts(content: Option<&Value>) -> (String, Vec<Attachment>) {
                     item.get("mimeType").and_then(Value::as_str).unwrap_or_default(),
                 );
                 if data.is_empty() || mime.is_empty() {
-                    parts.push(format!("[{} content without data]", item["type"]));
+                    parts.push(format!(
+                        "[{} content without data]",
+                        item.get("type").and_then(Value::as_str).unwrap_or("unknown")
+                    ));
                 } else if item["type"] == "image" {
                     attachments.push(Attachment::Image {
                         data: data.to_string(),

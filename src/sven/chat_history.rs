@@ -292,14 +292,16 @@ mod tests {
         // Ollama: a message-level `images` array, content stays a string
         let mut history = ChatHistory::new("sys", Backend::Ollama);
         history.user("look at this", &[image()]);
-        let message = history.get().last().unwrap();
+        let messages = history.get();
+        let message = messages.last().unwrap();
         assert_eq!(message["content"], "look at this");
         assert_eq!(message["images"], json!(["aGk="]));
 
         // OpenAI: `content` becomes an array of typed parts
         let mut history = ChatHistory::new("sys", Backend::OpenAI);
         history.user("look at this", &[image()]);
-        let message = history.get().last().unwrap();
+        let messages = history.get();
+        let message = messages.last().unwrap();
         let parts = message["content"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], json!({"type": "text", "text": "look at this"}));
@@ -312,7 +314,8 @@ mod tests {
         // before the multimodal support
         let mut history = ChatHistory::new("sys", Backend::OpenAI);
         history.user("plain", &[]);
-        let message = history.get().last().unwrap();
+        let messages = history.get();
+        let message = messages.last().unwrap();
         assert_eq!(message["content"], "plain");
         assert!(message.get("content").unwrap().is_string());
     }
@@ -328,7 +331,8 @@ mod tests {
             "ShotTool",
             None,
         );
-        let tool_message = history.get().last().unwrap();
+        let messages = history.get();
+        let tool_message = messages.last().unwrap();
         assert_eq!(tool_message["images"], json!(["aGk="]));
         assert_eq!(tool_message["content"], "see");
 
@@ -341,7 +345,8 @@ mod tests {
             "ShotTool",
             None,
         );
-        let tool_message = history.get().last().unwrap();
+        let messages = history.get();
+        let tool_message = messages.last().unwrap();
         let content = tool_message["content"].as_str().unwrap();
         assert!(content.starts_with("see"), "{}", content);
         assert!(content.contains("image"), "{}", content);

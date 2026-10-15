@@ -4,7 +4,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::sven::macros::tool;
-use crate::sven::tool::ToolOutput;
 use crate::sven::tools::subprocess;
 
 #[derive(Deserialize, Debug, JsonSchema)]
