@@ -77,7 +77,9 @@ prompt, so the model knows the file was mentioned but not delivered. MCP
 servers returning image or audio content forward it the same way — on
 Ollama the media rides inside the tool result message itself; on the
 OpenAI-compatible backends, whose tool-message format has no binary
-parts, the model is told the tool produced media it cannot see.
+parts, the media is delivered as one user message right after the
+round's tool results, so the model sees it as if it were part of the
+tool output.
 
 That matrix describes the *protocol*; whether the **model** can actually
 see a modality only the server knows. A text-only model (DeepSeek, plain

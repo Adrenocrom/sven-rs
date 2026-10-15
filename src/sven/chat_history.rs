@@ -52,6 +52,15 @@ pub struct ChatHistory {
     /// on every round, so media stays visible across the whole
     /// conversation without being re-encoded per request.
     backend: Backend,
+    /// Attachments produced by tools during the current round on an
+    /// OpenAI-compatible backend. The chat-completions tool message has
+    /// no binary parts, so they cannot ride on the tool result; they
+    /// are buffered here and delivered by `flush_tool_attachments` as
+    /// one user message once the round's tool results are complete —
+    /// the only role every OpenAI-compatible server accepts image and
+    /// audio parts on. Ollama never buffers (its tool messages carry
+    /// `images` directly), so this stays empty there.
+    pending_tool_attachments: Vec<Attachment>,
 }
 
 impl ChatHistory {
@@ -61,6 +70,7 @@ impl ChatHistory {
             tool_history: Vec::new(),
             system_prompt: system_prompt.to_string(),
             backend,
+            pending_tool_attachments: Vec::new(),
         }
     }
 
@@ -81,6 +91,9 @@ impl ChatHistory {
     /// media when answering follow-up questions.
     pub fn user(&mut self, prompt: &str, attachments: &[Attachment]) {
         self.tool_history.clear();
+        // the tool round is dropped, so its undelivered attachments go
+        // with it — they belong to a round the model will never see
+        self.pending_tool_attachments.clear();
         let mut entry = json!({
             "role": "user",
             "content": prompt
@@ -128,10 +141,11 @@ impl ChatHistory {
 
     /// Add a tool result, with optional attachments the tool produced
     /// (an MCP server returning an image, say). Ollama's message object
-    /// carries `images` on any role; the OpenAI-compatible wire format
-    /// has no binary parts in tool messages, so the backend appends a
-    /// text note there instead — the model learns the tool produced
-    /// media it cannot see.
+    /// carries `images` on any role, so the media rides on the tool
+    /// message itself. The OpenAI-compatible wire format has no binary
+    /// parts in tool messages, so the attachments are buffered there
+    /// and delivered by `flush_tool_attachments` as one user message
+    /// once the round's tool results are complete.
     pub fn tool(&mut self, output: &ToolOutput, tool_name: &str, tool_call_id: Option<&str>) {
         let mut entry = json!({
             "role": "tool",
@@ -143,7 +157,36 @@ impl ChatHistory {
         if let Some(id) = tool_call_id {
             entry["tool_call_id"] = json!(id);
         }
-        self.backend.apply_tool_attachments(&mut entry, &output.attachments);
+        match self.backend {
+            Backend::Ollama => {
+                self.backend.apply_tool_attachments(&mut entry, &output.attachments)
+            }
+            Backend::OpenAI | Backend::Vllm => {
+                self.pending_tool_attachments.extend(output.attachments.clone())
+            }
+        }
+        self.tool_history.push(entry);
+    }
+
+    /// Deliver the tool attachments buffered by `tool` on an
+    /// OpenAI-compatible backend as one user message, so the model
+    /// actually sees the media. Called once the round's tool results
+    /// are complete — a user message in the middle of the tool round
+    /// would interleave the results of parallel calls, and the
+    /// chat-completions format requires every `role: "tool"` message to
+    /// follow its `tool_calls` assistant message directly. Ollama never
+    /// buffers, so this is a no-op there.
+    pub fn flush_tool_attachments(&mut self) {
+        if self.pending_tool_attachments.is_empty() {
+            return;
+        }
+        let attachments = std::mem::take(&mut self.pending_tool_attachments);
+        let mut entry = json!({
+            "role": "user",
+            "content": "[the tool result(s) above included the following attachment(s) — \
+                        use them as if they were part of the tool output]",
+        });
+        self.backend.apply_user_attachments(&mut entry, &attachments);
         self.tool_history.push(entry);
     }
 
@@ -186,6 +229,7 @@ impl ChatHistory {
         self.history.clear();
         self.history.push(ChatHistory::system(&self.system_prompt));
         self.tool_history.clear();
+        self.pending_tool_attachments.clear();
     }
 }
 
@@ -335,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_attachments_ride_on_ollama_and_note_on_openai() {
+    fn tool_attachments_ride_on_ollama_and_flush_on_openai() {
         // Ollama's message object carries `images` on any role, so a
         // tool result can show the model an image
         let mut history = ChatHistory::new("sys", Backend::Ollama);
@@ -351,7 +395,8 @@ mod tests {
         assert_eq!(tool_message["content"], "see");
 
         // the chat-completions wire format has no binary parts in tool
-        // messages — the attachment becomes a note in the text
+        // messages — the attachments are buffered and flushed as one
+        // user message once the round's tool results are complete
         let mut history = ChatHistory::new("sys", Backend::OpenAI);
         history.user("q", &[]);
         history.tool(
@@ -359,13 +404,27 @@ mod tests {
             "ShotTool",
             None,
         );
+        // nothing flushed yet — the tool message stays text-only
         let messages = history.get();
         let tool_message = messages.last().unwrap();
-        let content = tool_message["content"].as_str().unwrap();
-        assert!(content.starts_with("see"), "{}", content);
-        assert!(content.contains("image"), "{}", content);
-        assert!(content.contains("not visible"), "{}", content);
+        assert_eq!(tool_message["content"], "see");
         assert!(tool_message.get("images").is_none());
+
+        history.flush_tool_attachments();
+        let messages = history.get();
+        let flush = messages.last().unwrap();
+        assert_eq!(flush["role"], "user");
+        let parts = flush["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "data:image/png;base64,aGk="
+        );
+        // the buffer is drained — a second flush adds nothing
+        let len_after_flush = messages.len();
+        history.flush_tool_attachments();
+        assert_eq!(history.get().len(), len_after_flush);
     }
 
     #[test]

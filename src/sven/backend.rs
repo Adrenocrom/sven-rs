@@ -256,32 +256,21 @@ impl Backend {
     /// Fold attachments into a tool result message. Ollama's message
     /// object carries `images` on any role, so the model sees the media
     /// itself. The chat-completions wire format has no binary parts in
-    /// tool messages — the attachments become a note in the text, so
-    /// the model at least knows the tool produced media it cannot see.
+    /// tool messages — the message is left untouched there and
+    /// `ChatHistory::tool` buffers the attachments, which
+    /// `ChatHistory::flush_tool_attachments` delivers as one user
+    /// message once the round's tool results are complete (a user
+    /// message is the one role every OpenAI-compatible server accepts
+    /// image/audio parts on).
     pub fn apply_tool_attachments(&self, message: &mut Value, attachments: &[Attachment]) {
         if attachments.is_empty() {
             return;
         }
         match self {
             Backend::Ollama => set_images(message, attachments),
-            Backend::OpenAI | Backend::Vllm => {
-                let content = message
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let kinds: Vec<&str> = {
-                    let mut kinds: Vec<&str> = attachments.iter().map(|a| a.kind()).collect();
-                    kinds.sort_unstable();
-                    kinds.dedup();
-                    kinds
-                };
-                message["content"] = json!(format!(
-                    "{content}\n[the tool also returned {} attachment(s): {} — \
-                     not visible in this tool result]",
-                    attachments.len(),
-                    kinds.join(", ")
-                ));
-            }
+            // nothing to fold in — the flush user message carries the
+            // media instead (see the doc comment)
+            Backend::OpenAI | Backend::Vllm => {}
         }
     }
 
@@ -808,20 +797,19 @@ mod tests {
     }
 
     #[test]
-    fn tool_attachments_ride_on_ollama_and_note_on_openai() {
+    fn tool_attachments_ride_on_ollama_and_buffer_on_openai() {
         // Ollama: the tool message itself carries the images
         let mut message = json!({"role": "tool", "content": "see", "tool_name": "ShotTool"});
         Backend::Ollama.apply_tool_attachments(&mut message, &[image("aGk=")]);
         assert_eq!(message["images"], json!(["aGk="]));
         assert_eq!(message["content"], "see");
 
-        // chat completions: no binary parts in tool messages — a note
+        // chat completions: no binary parts in tool messages — the
+        // message is left untouched and ChatHistory buffers the
+        // attachments for the flush user message
         let mut message = json!({"role": "tool", "content": "see", "tool_name": "ShotTool"});
         Backend::OpenAI.apply_tool_attachments(&mut message, &[image("aGk="), audio("audio/wav")]);
-        let content = message["content"].as_str().unwrap();
-        assert!(content.starts_with("see"), "{}", content);
-        // the kinds are listed sorted and deduplicated
-        assert!(content.contains("audio, image"), "{}", content);
+        assert_eq!(message["content"], "see");
         assert!(message.get("images").is_none());
     }
 }

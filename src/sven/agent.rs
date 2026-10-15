@@ -94,6 +94,24 @@ pub(crate) fn parse_tool_call(tool_call: &Value) -> Result<(String, Value, Optio
     Ok((name.to_string(), arguments, id))
 }
 
+/// Whether an assistant message must be recorded in the history. A
+/// tool-call round normally has empty content (OpenAI streams empty
+/// deltas around the `tool_calls` fragments, Ollama sends `content: ""`
+/// alongside `tool_calls`), so testing content alone would drop the
+/// echo of the very calls the following tool results answer — the next
+/// request would carry `role: "tool"` messages with no preceding
+/// `tool_calls`. OpenAI-compatible servers reject that with 400
+/// "messages with role 'tool' must be a response to a preceding message
+/// with 'tool_calls'", and Ollama's chat template renders the orphaned
+/// tool message into an untokenizable prompt (observed live: 400
+/// "Failed to tokenize prompt"). A pure-thinking final answer (empty
+/// content, no calls) is still not recorded — a pre-existing cosmetic
+/// gap (the next prompt then follows a user message directly), kept
+/// because recording empty assistant messages buys nothing.
+pub(crate) fn records_assistant(message: &MessageResponse) -> bool {
+    !message.tool_calls.is_empty() || !message.content.is_empty()
+}
+
 /// Whether an error body means the *model* cannot take a modality as
 /// input — the request was well-formed, the model is just text-only.
 /// Servers phrase this differently (litellm/vLLM: "this model does not
@@ -317,7 +335,7 @@ impl Agent {
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
             usage.add(&message.usage);
-            if !message.content.is_empty() {
+            if records_assistant(&message) {
                 self.history.assistant(&message);
             }
             rounds += 1;
@@ -363,6 +381,11 @@ impl Agent {
                 let result = self.process_tool_call(&tool_name, tool_params).await;
                 self.history.tool(&result, &tool_name, tool_call_id.as_deref());
             }
+            // The round's tool results are complete — deliver any media
+            // the tools produced as one user message (OpenAI-compatible
+            // backends only; on Ollama the media already rode on the
+            // tool messages and this is a no-op).
+            self.history.flush_tool_attachments();
         }
 
         let note = format!(
@@ -555,6 +578,40 @@ mod tests {
         assert!(!is_unsupported_modality_error(r#"{"error":"model not found"}"#));
         assert!(!is_unsupported_modality_error("context length exceeded"));
         assert!(!is_unsupported_modality_error(""));
+    }
+
+    #[test]
+    fn records_assistant_covers_tool_rounds_and_thinking_answers() {
+        // a tool-call round normally has empty content — the echo must
+        // still be recorded, or the tool results answer a call the next
+        // request no longer contains
+        let tool_round = MessageResponse {
+            content: String::new(),
+            tool_calls: vec![json!({"function": {"name": "ReadTool", "arguments": {}}})],
+            finish_reason: None,
+            usage: TokenUsage::default(),
+        };
+        assert!(records_assistant(&tool_round));
+
+        // a pure-thinking final answer (empty content, no calls) is
+        // not recorded — a pre-existing cosmetic gap, kept because
+        // recording empty assistant messages buys nothing
+        let thinking_only = MessageResponse {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: TokenUsage::default(),
+        };
+        assert!(!records_assistant(&thinking_only));
+
+        // a normal answer
+        let answer = MessageResponse {
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: TokenUsage::default(),
+        };
+        assert!(records_assistant(&answer));
     }
 
     #[test]
