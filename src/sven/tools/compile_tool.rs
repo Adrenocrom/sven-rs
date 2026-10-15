@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::sven::macros::tool;
+use crate::sven::tool::ToolOutput;
 use crate::sven::tools::subprocess;
 
 #[derive(Deserialize, Debug, JsonSchema)]
@@ -19,11 +20,25 @@ struct CompileToolParams {
     /// the language to compile, if rust is selected cargo build will be called
     language: Language
 }
+
+#[derive(Deserialize, Debug, JsonSchema)]
+struct TestToolParams {
+    /// the language to test, if rust is selected cargo test will be called
+    language: Language
+}
+
 async fn compile_rust() -> Result<String, Box<dyn std::error::Error>> {
     let mut command = Command::new("cargo");
     command.arg("build");
     Ok(subprocess::run_stderr(&mut command).await?)
 }
+
+async fn test_rust() -> Result<String, Box<dyn std::error::Error>> {
+    let mut command = Command::new("cargo");
+    command.arg("test");
+    Ok(subprocess::run_stderr(&mut command).await?)
+}
+
 
 async fn compile_uefi_rust() -> Result<String, Box<dyn std::error::Error>> {
     let mut command = Command::new("cargo");
@@ -54,6 +69,15 @@ async fn compile_python() -> Result<String, Box<dyn std::error::Error>> {
     command.arg(".");
     Ok(subprocess::run(&mut command).await?)
 }
+
+tool!(TestTool, TestToolParams, "Runs tests.", execute(args) {
+    // the match is the body's result: each arm is the Result<String, …>
+    // the tool! macro wraps into a ToolOutput
+    match args.language {
+        Language::Rust => test_rust().await,
+        _ => Err("Unsupported language".into())
+    }
+});
 
 tool!(CompileTool, CompileToolParams, "Compile to check for errors.", execute(args) {
     // the match is the body's result: each arm is the Result<String, …>
