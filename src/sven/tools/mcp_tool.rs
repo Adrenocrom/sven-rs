@@ -113,7 +113,7 @@ mod tests {
             tool.params(),
             Some(json!({"type": "object", "properties": {"text": {"type": "string"}}}))
         );
-        assert_eq!(tool.execute(json!({"text": "hi"})).await.unwrap(), "hello");
+        assert_eq!(tool.execute(json!({"text": "hi"})).await.unwrap().text, "hello");
 
         // the call reached the remote tool under its own name
         let sent = state.lock().unwrap().sent.clone();

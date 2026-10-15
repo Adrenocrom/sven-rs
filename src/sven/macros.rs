@@ -1,6 +1,12 @@
 // `execute` returns a boxed future (see `tool.rs`): native `async fn`
 // in traits is not dyn-compatible, so the macro performs the same
 // desugaring the `async-trait` crate would — without the dependency.
+//
+// The body keeps its original type, `Result<String, …>`: its `?`s and
+// `return Err`s leave the future unchanged, and the macro wraps the
+// String into the `ToolOutput` the trait returns. A tool that needs to
+// return attachments (images, audio) implements `Tool` by hand instead
+// — see `McpTool`.
 macro_rules! tool {
     (
         $tool:ident, $params:ident, $desc:literal,
@@ -18,7 +24,8 @@ macro_rules! tool {
             fn execute<'a>(&'a self, params: serde_json::Value) -> crate::sven::tool::ToolFuture<'a> {
                 Box::pin(async move {
                     let $args: $params = serde_json::from_value(params)?;
-                    $($body)*
+                    let result: Result<String, Box<dyn std::error::Error>> = { $($body)* };
+                    Ok(result?.into())
                 })
             }
         }
@@ -36,7 +43,10 @@ macro_rules! tool {
                 None
             }
             fn execute<'a>(&'a self, _params: serde_json::Value) -> crate::sven::tool::ToolFuture<'a> {
-                Box::pin(async move { $($body)* })
+                Box::pin(async move {
+                    let result: Result<String, Box<dyn std::error::Error>> = { $($body)* };
+                    Ok(result?.into())
+                })
             }
         }
     };

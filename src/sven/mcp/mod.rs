@@ -13,11 +13,13 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
+use crate::sven::attachment::Attachment;
 use crate::sven::config::McpServerConfig;
 use crate::sven::mcp::transport::{
     CALL_TIMEOUT, HANDSHAKE_TIMEOUT, NOTIFICATION_TIMEOUT, HttpTransport, SessionExpired,
     StdioTransport, Transport,
 };
+use crate::sven::tool::ToolOutput;
 use crate::sven::tools::mcp_tool::McpTool;
 
 /// The protocol revision sven asks for. `tools/list` and `tools/call`
@@ -165,8 +167,15 @@ impl McpClient {
         }
     }
 
-    /// Call one remote tool and render its result as text for the model.
-    pub async fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<String, Box<dyn Error>> {
+    /// Call one remote tool and render its result for the model: text
+    /// content as the text, image and audio content as attachments the
+    /// backend may carry. `isError: true` becomes an error so the agent
+    /// flags it.
+    pub async fn call_tool(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<ToolOutput, Box<dyn Error>> {
         let result = self
             .request(
                 "tools/call",
@@ -337,12 +346,13 @@ fn tool_info(entry: &Value) -> Option<McpToolInfo> {
     })
 }
 
-/// Render a `tools/call` result as the text the model sees. Text content
-/// passes through; binary content (images, audio) becomes a placeholder
-/// — the base64 payload would only flood the context. `isError: true`
+/// Render a `tools/call` result for the model. Text content becomes the
+/// text; image and audio content become attachments the backend may
+/// carry (the base64 payload would flood the context as text, but as an
+/// attachment it costs only the vision/audio tokens). `isError: true`
 /// becomes an error so the agent flags it.
-fn format_tool_result(result: &Value) -> Result<String, Box<dyn Error>> {
-    let text = content_text(result.get("content"));
+fn format_tool_result(result: &Value) -> Result<ToolOutput, Box<dyn Error>> {
+    let (text, attachments) = content_parts(result.get("content"));
     if result.get("isError") == Some(&json!(true)) {
         let message = if text.is_empty() {
             "(no message)".to_string()
@@ -351,23 +361,28 @@ fn format_tool_result(result: &Value) -> Result<String, Box<dyn Error>> {
         };
         return Err(format!("the tool reported an error: {}", message).into());
     }
-    if !text.is_empty() {
-        return Ok(text);
+    if !text.is_empty() || !attachments.is_empty() {
+        return Ok(ToolOutput { text, attachments });
     }
     if let Some(structured) = result.get("structuredContent") {
-        return Ok(structured.to_string());
+        return Ok(ToolOutput::text(structured.to_string()));
     }
     if result.get("content").is_none() {
         return Err("malformed tools/call result: no 'content' array".into());
     }
-    Ok("(the tool returned no text content)".to_string())
+    Ok(ToolOutput::text("(the tool returned no text content)"))
 }
 
-fn content_text(content: Option<&Value>) -> String {
+/// Split a `tools/call` content array into the text the model reads and
+/// the attachments the backend may carry. Text passes through; image
+/// and audio items keep their base64 payload and MIME type; everything
+/// else becomes a placeholder.
+fn content_parts(content: Option<&Value>) -> (String, Vec<Attachment>) {
     let Some(items) = content.and_then(Value::as_array) else {
-        return String::new();
+        return (String::new(), Vec::new());
     };
     let mut parts = Vec::new();
+    let mut attachments = Vec::new();
     for item in items {
         match item.get("type").and_then(Value::as_str).unwrap_or("unknown") {
             "text" => parts.push(
@@ -376,8 +391,25 @@ fn content_text(content: Option<&Value>) -> String {
                     .unwrap_or("")
                     .to_string(),
             ),
-            "image" => parts.push("[image content omitted]".to_string()),
-            "audio" => parts.push("[audio content omitted]".to_string()),
+            "image" | "audio" => {
+                let (data, mime) = (
+                    item.get("data").and_then(Value::as_str).unwrap_or_default(),
+                    item.get("mimeType").and_then(Value::as_str).unwrap_or_default(),
+                );
+                if data.is_empty() || mime.is_empty() {
+                    parts.push(format!("[{} content without data]", item["type"]));
+                } else if item["type"] == "image" {
+                    attachments.push(Attachment::Image {
+                        data: data.to_string(),
+                        mime: mime.to_string(),
+                    });
+                } else {
+                    attachments.push(Attachment::Audio {
+                        data: data.to_string(),
+                        mime: mime.to_string(),
+                    });
+                }
+            }
             "resource" => parts.push(format!(
                 "[embedded resource: {}]",
                 item.pointer("/resource/uri")
@@ -391,7 +423,7 @@ fn content_text(content: Option<&Value>) -> String {
             other => parts.push(format!("[unsupported content type: {}]", other)),
         }
     }
-    parts.join("\n")
+    (parts.join("\n"), attachments)
 }
 
 /// A JSON-RPC error object as an error, with the server named.
@@ -510,7 +542,7 @@ mod tests {
         assert_eq!(tools[1].input_schema, json!({"type": "object", "properties": {}}));
 
         assert_eq!(
-            client.call_tool("echo", json!({"text": "hi"})).await.unwrap(),
+            client.call_tool("echo", json!({"text": "hi"})).await.unwrap().text,
             "pong"
         );
 
@@ -552,7 +584,7 @@ mod tests {
         state.lock().unwrap().session_expired_once = true;
 
         assert_eq!(
-            client.call_tool("echo", json!({"text": "hi"})).await.unwrap(),
+            client.call_tool("echo", json!({"text": "hi"})).await.unwrap().text,
             "again"
         );
 
@@ -660,30 +692,51 @@ mod tests {
 
     #[test]
     fn formats_tool_results_for_the_model() {
-        let text = format_tool_result(&json!({
+        let output = format_tool_result(&json!({
             "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
         }))
         .unwrap();
-        assert_eq!(text, "a\nb");
+        assert_eq!(output.text, "a\nb");
+        assert!(output.attachments.is_empty());
 
-        // binary content becomes a placeholder, not a base64 flood
-        let text = format_tool_result(&json!({
+        // image and audio content become attachments, ready to forward
+        let output = format_tool_result(&json!({
             "content": [
+                {"type": "text", "text": "see"},
                 {"type": "image", "data": "AAAA", "mimeType": "image/png"},
+                {"type": "audio", "data": "BBBB", "mimeType": "audio/wav"},
                 {"type": "resource", "resource": {"uri": "file:///x"}}
             ]
         }))
         .unwrap();
-        assert!(text.contains("[image content omitted]"), "{}", text);
-        assert!(text.contains("[embedded resource: file:///x]"), "{}", text);
+        assert_eq!(output.text, "see\n[embedded resource: file:///x]");
+        assert_eq!(output.attachments.len(), 2);
+        assert_eq!(
+            output.attachments[0],
+            Attachment::Image { data: "AAAA".to_string(), mime: "image/png".to_string() }
+        );
+        assert_eq!(
+            output.attachments[1],
+            Attachment::Audio { data: "BBBB".to_string(), mime: "audio/wav".to_string() }
+        );
 
-        // structured output is the fallback when there is no text
+        // a binary item without data is a placeholder, not a broken
+        // attachment
+        let output = format_tool_result(&json!({
+            "content": [{"type": "image", "mimeType": "image/png"}]
+        }))
+        .unwrap();
+        assert!(output.attachments.is_empty());
+        assert!(output.text.contains("[image content without data]"), "{}", output.text);
+
+        // structured output is the fallback when there is no text and
+        // no attachments
         let structured = format_tool_result(&json!({
             "content": [],
             "structuredContent": {"answer": 42}
         }))
         .unwrap();
-        assert_eq!(structured, json!({"answer": 42}).to_string());
+        assert_eq!(structured.text, json!({"answer": 42}).to_string());
 
         // isError results become errors carrying the message
         let error = format_tool_result(&json!({

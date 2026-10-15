@@ -56,11 +56,13 @@ async fn compile_python() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 tool!(CompileTool, CompileToolParams, "Compile to check for errors.", execute(args) {
+    // the match is the body's result: each arm is the Result<String, …>
+    // the tool! macro wraps into a ToolOutput
     match args.language {
-        Language::Rust => return Ok(compile_rust().await?),
-        Language::UefiRust => return Ok(compile_uefi_rust().await?),
-        Language::Java => return Ok(compile_java().await?),
-        Language::Dotnet => return Ok(compile_dotnet().await?),
-        Language::Python => return Ok(compile_python().await?)
+        Language::Rust => compile_rust().await,
+        Language::UefiRust => compile_uefi_rust().await,
+        Language::Java => compile_java().await,
+        Language::Dotnet => compile_dotnet().await,
+        Language::Python => compile_python().await
     }
 });

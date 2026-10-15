@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str, json};
 
+use crate::sven::attachment::Attachment;
 use crate::sven::{agent::StreamState, term};
 
 /// Which server protocol to speak. `Vllm` uses the same wire format as
@@ -209,6 +210,112 @@ impl Backend {
         matches!(self, Backend::OpenAI | Backend::Vllm)
     }
 
+    /// Whether the backend's chat API can carry this attachment at all.
+    /// Ollama's `/api/chat` takes images only (a message-level `images`
+    /// array); OpenAI's chat completions take images and wav/mp3 audio
+    /// as typed content parts; vLLM additionally takes video (`video_url`
+    /// data URIs). Unsupported attachments are dropped with a note
+    /// before they ever reach the history.
+    pub fn supports_attachment(&self, attachment: &Attachment) -> bool {
+        match self {
+            Backend::Ollama => matches!(attachment, Attachment::Image { .. }),
+            Backend::OpenAI => match attachment {
+                Attachment::Image { .. } => true,
+                // `input_audio.format` accepts exactly these two
+                Attachment::Audio { mime, .. } => {
+                    matches!(mime.as_str(), "audio/wav" | "audio/mpeg")
+                }
+                Attachment::Video { .. } => false,
+            },
+            Backend::Vllm => true,
+        }
+    }
+
+    /// Fold attachments into a user message, in this backend's wire
+    /// format. Ollama: a message-level `images` array next to the
+    /// string content. OpenAI-compatible: `content` becomes an array
+    /// of typed parts — the text first, then one part per attachment.
+    pub fn apply_user_attachments(&self, message: &mut Value, attachments: &[Attachment]) {
+        if attachments.is_empty() {
+            return;
+        }
+        match self {
+            Backend::Ollama => set_images(message, attachments),
+            Backend::OpenAI | Backend::Vllm => {
+                let text = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let mut parts = vec![json!({"type": "text", "text": text})];
+                parts.extend(attachments.iter().map(|a| self.content_part(a)));
+                message["content"] = json!(parts);
+            }
+        }
+    }
+
+    /// Fold attachments into a tool result message. Ollama's message
+    /// object carries `images` on any role, so the model sees the media
+    /// itself. The chat-completions wire format has no binary parts in
+    /// tool messages — the attachments become a note in the text, so
+    /// the model at least knows the tool produced media it cannot see.
+    pub fn apply_tool_attachments(&self, message: &mut Value, attachments: &[Attachment]) {
+        if attachments.is_empty() {
+            return;
+        }
+        match self {
+            Backend::Ollama => set_images(message, attachments),
+            Backend::OpenAI | Backend::Vllm => {
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let kinds: Vec<&str> = {
+                    let mut kinds: Vec<&str> = attachments.iter().map(|a| a.kind()).collect();
+                    kinds.sort_unstable();
+                    kinds.dedup();
+                    kinds
+                };
+                message["content"] = json!(format!(
+                    "{content}\n[the tool also returned {} attachment(s): {} — \
+                     not visible in this tool result]",
+                    attachments.len(),
+                    kinds.join(", ")
+                ));
+            }
+        }
+    }
+
+    /// One OpenAI-compatible content part for an attachment. Images are
+    /// data URIs in both; audio differs — OpenAI's `input_audio` takes
+    /// raw base64 plus a `format`, vLLM's `audio_url` a data URI — and
+    /// video is vLLM-only (`video_url` data URI).
+    fn content_part(&self, attachment: &Attachment) -> Value {
+        match (self, attachment) {
+            (_, Attachment::Image { data, mime }) => json!({
+                "type": "image_url",
+                "image_url": {"url": format!("data:{mime};base64,{data}")}
+            }),
+            (Backend::OpenAI, Attachment::Audio { data, mime }) => json!({
+                "type": "input_audio",
+                "input_audio": {"data": data, "format": audio_format(mime)}
+            }),
+            (Backend::Vllm, Attachment::Audio { data, mime }) => json!({
+                "type": "audio_url",
+                "audio_url": {"url": format!("data:{mime};base64,{data}")}
+            }),
+            (Backend::Vllm, Attachment::Video { data, mime }) => json!({
+                "type": "video_url",
+                "video_url": {"url": format!("data:{mime};base64,{data}")}
+            }),
+            // Ollama never builds parts (the images array is set
+            // directly), and modality/backend pairs `supports_attachment`
+            // rejects were filtered out before reaching the history
+            (Backend::OpenAI, Attachment::Video { .. }) | (Backend::Ollama, _) => {
+                json!({"type": "text", "text": "[unsupported attachment]"})
+            }
+        }
+    }
+
     /// Apply one line of the response stream. The OpenAI-compatible
     /// backends speak SSE: the line goes into the parser in
     /// `stream_state`, and a payload comes out only when the line's
@@ -270,6 +377,30 @@ impl Backend {
         }
     }
 
+}
+
+/// Ollama's message-level `images` array: raw base64 strings, no MIME
+/// type — the server sniffs the format. Any role may carry it.
+fn set_images(message: &mut Value, attachments: &[Attachment]) {
+    let images: Vec<&str> = attachments
+        .iter()
+        .filter_map(|a| match a {
+            Attachment::Image { data, .. } => Some(data.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !images.is_empty() {
+        message["images"] = json!(images);
+    }
+}
+
+/// OpenAI's `input_audio.format` field: the container name, not the
+/// MIME type (`audio/mpeg` → `mp3`).
+fn audio_format(mime: &str) -> &'static str {
+    match mime {
+        "audio/wav" => "wav",
+        _ => "mp3",
+    }
 }
 
 impl ToString for Backend {
@@ -535,5 +666,98 @@ mod tests {
         assert_eq!(serde_json::from_str::<Backend>(r#""vllm""#).unwrap(), Backend::Vllm);
         // unknown names are a hard error, not a silent Ollama fallback
         assert!(serde_json::from_str::<Backend>(r#""llamacpp""#).is_err());
+    }
+
+    fn image(data: &str) -> Attachment {
+        Attachment::Image { data: data.to_string(), mime: "image/png".to_string() }
+    }
+
+    fn audio(mime: &str) -> Attachment {
+        Attachment::Audio { data: "aGk=".to_string(), mime: mime.to_string() }
+    }
+
+    fn video() -> Attachment {
+        Attachment::Video { data: "aGk=".to_string(), mime: "video/mp4".to_string() }
+    }
+
+    #[test]
+    fn attachment_support_follows_the_backend() {
+        // Ollama: images only
+        assert!(Backend::Ollama.supports_attachment(&image("x")));
+        assert!(!Backend::Ollama.supports_attachment(&audio("audio/wav")));
+        assert!(!Backend::Ollama.supports_attachment(&video()));
+        // OpenAI: images plus wav/mp3 audio, no video
+        assert!(Backend::OpenAI.supports_attachment(&image("x")));
+        assert!(Backend::OpenAI.supports_attachment(&audio("audio/wav")));
+        assert!(Backend::OpenAI.supports_attachment(&audio("audio/mpeg")));
+        assert!(!Backend::OpenAI.supports_attachment(&audio("audio/ogg")));
+        assert!(!Backend::OpenAI.supports_attachment(&video()));
+        // vLLM: everything
+        assert!(Backend::Vllm.supports_attachment(&image("x")));
+        assert!(Backend::Vllm.supports_attachment(&audio("audio/wav")));
+        assert!(Backend::Vllm.supports_attachment(&video()));
+    }
+
+    #[test]
+    fn user_attachments_become_the_backend_wire_format() {
+        // Ollama: images array next to the string content
+        let mut message = json!({"role": "user", "content": "look"});
+        Backend::Ollama.apply_user_attachments(&mut message, &[image("aGk=")]);
+        assert_eq!(message["content"], "look");
+        assert_eq!(message["images"], json!(["aGk="]));
+
+        // OpenAI: typed parts, image as a data URI
+        let mut message = json!({"role": "user", "content": "look"});
+        Backend::OpenAI.apply_user_attachments(&mut message, &[image("aGk=")]);
+        assert_eq!(
+            message["content"],
+            json!([
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGk="}}
+            ])
+        );
+
+        // OpenAI audio: raw base64 plus a format field
+        let mut message = json!({"role": "user", "content": "listen"});
+        Backend::OpenAI.apply_user_attachments(&mut message, &[audio("audio/wav")]);
+        assert_eq!(
+            message["content"][1],
+            json!({"type": "input_audio", "input_audio": {"data": "aGk=", "format": "wav"}})
+        );
+
+        // vLLM audio and video: data URIs
+        let mut message = json!({"role": "user", "content": "listen"});
+        Backend::Vllm.apply_user_attachments(&mut message, &[audio("audio/wav"), video()]);
+        assert_eq!(
+            message["content"][1],
+            json!({"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,aGk="}})
+        );
+        assert_eq!(
+            message["content"][2],
+            json!({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,aGk="}})
+        );
+
+        // no attachments → the message is untouched
+        let mut message = json!({"role": "user", "content": "plain"});
+        Backend::OpenAI.apply_user_attachments(&mut message, &[]);
+        assert_eq!(message["content"], "plain");
+    }
+
+    #[test]
+    fn tool_attachments_ride_on_ollama_and_note_on_openai() {
+        // Ollama: the tool message itself carries the images
+        let mut message = json!({"role": "tool", "content": "see", "tool_name": "ShotTool"});
+        Backend::Ollama.apply_tool_attachments(&mut message, &[image("aGk=")]);
+        assert_eq!(message["images"], json!(["aGk="]));
+        assert_eq!(message["content"], "see");
+
+        // chat completions: no binary parts in tool messages — a note
+        let mut message = json!({"role": "tool", "content": "see", "tool_name": "ShotTool"});
+        Backend::OpenAI.apply_tool_attachments(&mut message, &[image("aGk="), audio("audio/wav")]);
+        let content = message["content"].as_str().unwrap();
+        assert!(content.starts_with("see"), "{}", content);
+        // the kinds are listed sorted and deduplicated
+        assert!(content.contains("audio, image"), "{}", content);
+        assert!(message.get("images").is_none());
     }
 }

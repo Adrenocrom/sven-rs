@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod agent;
+pub mod attachment;
 pub mod chat_history;
 pub mod config;
 pub mod macros;

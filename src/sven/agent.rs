@@ -4,13 +4,14 @@ use std::io::Write;
 use reqwest::{Client, Response};
 use serde_json::{Value, from_str, json};
 
+use crate::sven::attachment::{Attachment, expand, filter_supported};
 use crate::sven::backend::Backend;
 use crate::sven::chat_history::{ChatHistory, MessageResponse, TokenUsage};
 use crate::sven::config::ChatOptions;
 use crate::sven::sse::SseParser;
 use crate::sven::stats::{RunOutcome, RunStatus, StatsStore};
 use crate::sven::term;
-use crate::sven::tool::Tool;
+use crate::sven::tool::{Tool, ToolOutput};
 use crate::sven::tool_registry::ToolRegistry;
 use crate::sven::tools::notify_tool::NotifySendTool;
 
@@ -172,21 +173,31 @@ impl Agent {
         let stats = StatsStore::load(&agent_config.data_dir);
         Agent {
             client: Client::new(),
-            history: ChatHistory::new(&agent_config.system_prompt),
+            history: ChatHistory::new(&agent_config.system_prompt, agent_config.backend.clone()),
             config: agent_config,
             stats,
         }
     }
 
-    /// One user prompt → final answer. Wraps the round loop to accumulate
-    /// the token usage of every round and measure the wall time until the
-    /// run finishes; the summary is printed on every exit path (final
-    /// answer, request error, round cap) and the run is recorded in
-    /// `statistics.json`.
+    /// One user prompt → final answer. `@path` mentions in the prompt are
+    /// expanded into attachments here — not in the REPL — so the
+    /// interactive and non-interactive modes behave identically.
+    /// Warnings (missing file, unsupported modality) are appended to the
+    /// prompt as bracketed notes: the model must learn why a mentioned
+    /// file is missing, or it will confidently answer about a file it
+    /// never saw.
     pub async fn run(&mut self, message: &str) {
+        let (attachments, warnings) = expand(message, &self.config.backend);
+        for warning in &warnings {
+            eprintln!("... {}", warning);
+        }
+        let mut prompt = message.to_string();
+        for warning in warnings {
+            prompt.push_str(&format!("\n[{warning}]"));
+        }
         let start = std::time::Instant::now();
         let mut usage = TokenUsage::default();
-        let outcome = self.run_rounds(message, &mut usage).await;
+        let outcome = self.run_rounds(&prompt, &attachments, &mut usage).await;
         let elapsed = start.elapsed();
         let summary = format!(
             "run finished in {} — in {} out {} tokens ({} total)",
@@ -237,8 +248,13 @@ impl Agent {
         }
     }
 
-    async fn run_rounds(&mut self, message: &str, usage: &mut TokenUsage) -> RunOutcome {
-        self.history.user(message);
+    async fn run_rounds(
+        &mut self,
+        message: &str,
+        attachments: &[Attachment],
+        usage: &mut TokenUsage,
+    ) -> RunOutcome {
+        self.history.user(message, attachments);
         let mut rounds = 0u64;
         let mut tool_calls = 0u64;
         for _round in 0..MAX_TOOL_ROUNDS {
@@ -311,7 +327,7 @@ impl Agent {
                         // keep the id when the fragment carried one, so
                         // the result can still be matched to its call
                         let id = tool_call.get("id").and_then(Value::as_str);
-                        self.history.tool(&error, "malformed", id);
+                        self.history.tool(&ToolOutput::text(error), "malformed", id);
                         continue;
                     }
                 };
@@ -414,9 +430,13 @@ impl Agent {
         }
     }
 
-    /// Execute one tool call and return the result for the history,
-    /// truncated to `MAX_TOOL_OUTPUT` characters.
-    pub async fn process_tool_call(&self, tool_name: &str, params: Value) -> String {
+    /// Execute one tool call and return the result for the history: the
+    /// text truncated to `MAX_TOOL_OUTPUT` characters (a base64 payload
+    /// must never be cut mid-character, so attachments are never
+    /// truncated — ones the backend cannot carry are dropped with a
+    /// note instead, so the model knows the tool produced media it
+    /// cannot see).
+    pub async fn process_tool_call(&self, tool_name: &str, params: Value) -> ToolOutput {
         let result = match self.config.tool_registry.get_tool(tool_name) {
             Some(tool) => {
                 println!("\t🔧  {} {}", term::tool_color(&self.config.backend,tool_name), &params.to_string());
@@ -424,13 +444,19 @@ impl Agent {
                     Ok(result) => result,
                     Err(err) => {
                         println!("    {}", term::red(&format!("ERROR: {}", err)));
-                        err.to_string()
+                        ToolOutput::text(err.to_string())
                     }
                 }
             }
-            None => format!("Error: Tool '{}' not found in registry", tool_name),
+            None => ToolOutput::text(format!("Error: Tool '{}' not found in registry", tool_name)),
         };
-        truncate(&result, MAX_TOOL_OUTPUT)
+        let (attachments, dropped) =
+            filter_supported(&self.config.backend, result.attachments);
+        let mut text = truncate(&result.text, MAX_TOOL_OUTPUT);
+        for note in dropped {
+            text.push_str(&format!("\n[{note}]"));
+        }
+        ToolOutput { text, attachments }
     }
 
     pub fn clear(&mut self) {

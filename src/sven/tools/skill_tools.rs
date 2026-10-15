@@ -100,20 +100,21 @@ tool!(SearchSkillsTool, SearchSkillsParams, "Search stored skills by keywords ag
     let limit = args.limit.unwrap_or(5).clamp(1, 50) as usize;
     let hits = skills::search_skills(&args.query, limit);
     if hits.is_empty() {
-        return Ok(format!("No skills match {:?}.", args.query));
+        Ok(format!("No skills match {:?}.", args.query))
+    } else {
+        let mut out = String::new();
+        for hit in &hits {
+            out.push_str(&format!(
+                "- {} (score {}, matched: {}) — {}\n  tags: [{}]\n",
+                hit.name,
+                hit.score,
+                hit.matched.join(", "),
+                hit.description,
+                hit.tags.join(", ")
+            ));
+        }
+        Ok(out)
     }
-    let mut out = String::new();
-    for hit in &hits {
-        out.push_str(&format!(
-            "- {} (score {}, matched: {}) — {}\n  tags: [{}]\n",
-            hit.name,
-            hit.score,
-            hit.matched.join(", "),
-            hit.description,
-            hit.tags.join(", ")
-        ));
-    }
-    Ok(out)
 });
 
 #[derive(Deserialize, Debug, JsonSchema)]

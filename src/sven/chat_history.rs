@@ -1,6 +1,10 @@
 use chrono::Local;
 use serde_json::{Value, json};
 
+use crate::sven::attachment::Attachment;
+use crate::sven::backend::Backend;
+use crate::sven::tool::ToolOutput;
+
 /// Token counts of one streamed response, as reported by the server
 /// (Ollama: `prompt_eval_count`/`eval_count` on the done chunk;
 /// OpenAI-compatible: the `usage` chunk). The agent accumulates them
@@ -43,14 +47,20 @@ pub struct ChatHistory {
     history: Vec<Value>,
     tool_history: Vec<Value>,
     system_prompt: String,
+    /// Attachments are serialized into each message as it is pushed, in
+    /// this backend's wire format — the stored `Value`s are sent verbatim
+    /// on every round, so media stays visible across the whole
+    /// conversation without being re-encoded per request.
+    backend: Backend,
 }
 
 impl ChatHistory {
-    pub fn new(system_prompt: &str) -> Self {
+    pub fn new(system_prompt: &str, backend: Backend) -> Self {
         Self {
             history: vec![ChatHistory::system(system_prompt)],
             tool_history: Vec::new(),
             system_prompt: system_prompt.to_string(),
+            backend,
         }
     }
 
@@ -63,12 +73,20 @@ impl ChatHistory {
         })
     }
 
-    pub fn user(&mut self, prompt: &str) {
+    /// Add the user's prompt, with optional attachments (`@path`
+    /// mentions expanded by the agent). The attachments are folded into
+    /// the message in the backend's wire format — Ollama: a
+    /// message-level `images` array; OpenAI-compatible: typed content
+    /// parts — and stay in the history, so the model can still see the
+    /// media when answering follow-up questions.
+    pub fn user(&mut self, prompt: &str, attachments: &[Attachment]) {
         self.tool_history.clear();
-        self.history.push(json!({
+        let mut entry = json!({
             "role": "user",
             "content": prompt
-        }));
+        });
+        self.backend.apply_user_attachments(&mut entry, attachments);
+        self.history.push(entry);
     }
 
     /// Drop a trailing user message — used when the request failed, so the
@@ -108,10 +126,16 @@ impl ChatHistory {
         self.history.push(entry);
     }
 
-    pub fn tool(&mut self, content: &str, tool_name: &str, tool_call_id: Option<&str>) {
+    /// Add a tool result, with optional attachments the tool produced
+    /// (an MCP server returning an image, say). Ollama's message object
+    /// carries `images` on any role; the OpenAI-compatible wire format
+    /// has no binary parts in tool messages, so the backend appends a
+    /// text note there instead — the model learns the tool produced
+    /// media it cannot see.
+    pub fn tool(&mut self, output: &ToolOutput, tool_name: &str, tool_call_id: Option<&str>) {
         let mut entry = json!({
             "role": "tool",
-            "content": content,
+            "content": output.text,
             "tool_name": tool_name,
         });
         // OpenAI matches a tool result to its call via `tool_call_id`;
@@ -119,6 +143,7 @@ impl ChatHistory {
         if let Some(id) = tool_call_id {
             entry["tool_call_id"] = json!(id);
         }
+        self.backend.apply_tool_attachments(&mut entry, &output.attachments);
         self.tool_history.push(entry);
     }
 
@@ -167,6 +192,13 @@ mod tests {
         }
     }
 
+    fn image() -> Attachment {
+        Attachment::Image {
+            data: "aGk=".to_string(), // base64 of "hi"
+            mime: "image/png".to_string(),
+        }
+    }
+
     fn roles(history: &ChatHistory) -> Vec<&str> {
         history
             .get()
@@ -178,14 +210,14 @@ mod tests {
 
     #[test]
     fn orders_messages_across_tool_rounds() {
-        let mut history = ChatHistory::new("sys");
-        history.user("question");
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("question", &[]);
         history.assistant(&response("", vec![tool_call("ReadTool")]));
-        history.tool("file contents", "ReadTool", None);
+        history.tool(&ToolOutput::text("file contents"), "ReadTool", None);
         assert_eq!(roles(&history), ["system", "user", "assistant", "tool"]);
 
         history.assistant(&response("", vec![tool_call("GrepTool")]));
-        history.tool("matches", "GrepTool", None);
+        history.tool(&ToolOutput::text("matches"), "GrepTool", None);
         assert_eq!(
             roles(&history),
             ["system", "user", "assistant", "tool", "assistant", "tool"]
@@ -194,21 +226,21 @@ mod tests {
         // the final answer ends the turn; the next user message drops the
         // finished tool round from the context
         history.assistant(&response("final answer", Vec::new()));
-        history.user("next question");
+        history.user("next question", &[]);
         assert_eq!(roles(&history), ["system", "user", "assistant", "user"]);
     }
 
     #[test]
     fn pop_user_removes_only_a_trailing_user_message() {
-        let mut history = ChatHistory::new("sys");
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
         history.pop_user(); // trailing message is the system prompt — no-op
         assert_eq!(history.get().len(), 1);
 
-        history.user("q");
+        history.user("q", &[]);
         history.pop_user();
         assert_eq!(history.get().len(), 1);
 
-        history.user("q");
+        history.user("q", &[]);
         history.assistant(&response("a", Vec::new()));
         history.pop_user(); // trailing message is assistant — no-op
         assert_eq!(history.get().len(), 3);
@@ -216,13 +248,13 @@ mod tests {
 
     #[test]
     fn tool_results_carry_the_call_id() {
-        let mut history = ChatHistory::new("sys");
-        history.user("q");
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("q", &[]);
         history.assistant(&response("", vec![json!({
             "id": "call_1",
             "function": {"name": "ReadTool", "arguments": {"path": "src/main.rs"}}
         })]));
-        history.tool("file contents", "ReadTool", Some("call_1"));
+        history.tool(&ToolOutput::text("file contents"), "ReadTool", Some("call_1"));
         let messages = history.get();
         let tool_message = messages.last().unwrap();
         assert_eq!(tool_message["role"], "tool");
@@ -232,8 +264,8 @@ mod tests {
 
     #[test]
     fn tool_calls_sent_back_always_carry_type_function() {
-        let mut history = ChatHistory::new("sys");
-        history.user("q");
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("q", &[]);
         // Ollama-shaped call: no `type`, object arguments — the field is
         // defaulted so the history is valid for any backend
         history.assistant(&response("", vec![json!({
@@ -246,12 +278,74 @@ mod tests {
 
     #[test]
     fn clear_resets_to_the_system_prompt() {
-        let mut history = ChatHistory::new("be helpful");
-        history.user("hi");
+        let mut history = ChatHistory::new("be helpful", Backend::Ollama);
+        history.user("hi", &[]);
         history.clear();
         let messages = history.get();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "system");
         assert!(messages[0]["content"].as_str().unwrap().contains("be helpful"));
+    }
+
+    #[test]
+    fn user_attachments_serialize_per_backend() {
+        // Ollama: a message-level `images` array, content stays a string
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("look at this", &[image()]);
+        let message = history.get().last().unwrap();
+        assert_eq!(message["content"], "look at this");
+        assert_eq!(message["images"], json!(["aGk="]));
+
+        // OpenAI: `content` becomes an array of typed parts
+        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        history.user("look at this", &[image()]);
+        let message = history.get().last().unwrap();
+        let parts = message["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"type": "text", "text": "look at this"}));
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "data:image/png;base64,aGk="
+        );
+
+        // no attachments → the message stays a plain string, exactly as
+        // before the multimodal support
+        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        history.user("plain", &[]);
+        let message = history.get().last().unwrap();
+        assert_eq!(message["content"], "plain");
+        assert!(message.get("content").unwrap().is_string());
+    }
+
+    #[test]
+    fn tool_attachments_ride_on_ollama_and_note_on_openai() {
+        // Ollama's message object carries `images` on any role, so a
+        // tool result can show the model an image
+        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        history.user("q", &[]);
+        history.tool(
+            &ToolOutput { text: "see".to_string(), attachments: vec![image()] },
+            "ShotTool",
+            None,
+        );
+        let tool_message = history.get().last().unwrap();
+        assert_eq!(tool_message["images"], json!(["aGk="]));
+        assert_eq!(tool_message["content"], "see");
+
+        // the chat-completions wire format has no binary parts in tool
+        // messages — the attachment becomes a note in the text
+        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        history.user("q", &[]);
+        history.tool(
+            &ToolOutput { text: "see".to_string(), attachments: vec![image()] },
+            "ShotTool",
+            None,
+        );
+        let tool_message = history.get().last().unwrap();
+        let content = tool_message["content"].as_str().unwrap();
+        assert!(content.starts_with("see"), "{}", content);
+        assert!(content.contains("image"), "{}", content);
+        assert!(content.contains("not visible"), "{}", content);
+        assert!(tool_message.get("images").is_none());
     }
 }

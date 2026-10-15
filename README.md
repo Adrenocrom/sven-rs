@@ -52,6 +52,33 @@ as they execute, and their results are fed back to the model until it
 stops calling tools. Very large tool results are truncated before they are
 fed back (the model sees an `… [output truncated]` marker).
 
+### Multimodal input
+
+Mention a file with `@` in your prompt to attach it — the extension picks
+the modality:
+
+```
+>> what's wrong with the layout in @screenshots/ui.png?
+>> transcribe @recordings/standup.m4a and summarize @demo.mp4
+```
+
+The file must be inside the workspace (same path confinement as the file
+tools) and at most 10 MB. Attachments stay in the conversation history, so
+follow-up questions can refer back to them. What each backend carries:
+
+| Backend | Images | Audio | Video |
+| ------- | ------ | ----- | ----- |
+| `ollama` | ✅ | — | — |
+| `openai` | ✅ | wav, mp3 | — |
+| `vllm` | ✅ | ✅ | ✅ |
+
+Anything the backend cannot carry is dropped with a note appended to the
+prompt, so the model knows the file was mentioned but not delivered. MCP
+servers returning image or audio content forward it the same way — on
+Ollama the media rides inside the tool result message itself; on the
+OpenAI-compatible backends, whose tool-message format has no binary
+parts, the model is told the tool produced media it cannot see.
+
 Each streamed response prints its token counts (`in <prompt> out <completion>`)
 as reported by the server, and when the run finishes a summary line shows the
 accumulated tokens of all rounds and the wall time. Counts above 999 are
@@ -244,9 +271,10 @@ Behavior worth knowing:
 - Requests the server sends *to* sven (sampling, roots, elicitation) are
   refused with a JSON-RPC error — sven supports none of them, and refusing
   keeps a waiting server from hanging.
-- Tool results are rendered as text for the model; binary content (images,
-  audio) becomes a placeholder instead of a base64 flood, and `isError`
-  results become tool errors.
+- Tool results are rendered for the model: text passes through, image
+  and audio content is forwarded as attachments the backend may carry
+  (see [Multimodal input](#multimodal-input)), and `isError` results
+  become tool errors.
 - An HTTP server that terminated the session (it answers 404, and may do so
   at any time — restart, idle timeout) is re-initialized transparently and
   the failed request retried once.
@@ -326,6 +354,8 @@ path-confinement check used by the file tools.
 - `src/sven/backend.rs` — the `Backend` enum (`ollama`, `openai`, `vllm`):
   endpoint, wire format and stream parsing per server protocol.
 - `src/sven/chat_history.rs` — conversation history sent with each request.
+- `src/sven/attachment.rs` — multimodal attachments: `@path` mention
+  expansion, MIME detection, base64, the per-backend support matrix.
 - `src/sven/config.rs` — config file loading (`SvenConfig::load()`).
 - `src/sven/mcp/` — the MCP client: JSON-RPC 2.0 over stdio (child
   process) or Streamable HTTP (one `reqwest` POST per message), plus the
