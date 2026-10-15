@@ -4,6 +4,7 @@ pub mod edit_tool;
 pub mod find_tool;
 pub mod grep_tool;
 pub mod list_files;
+pub mod load_attachment_tool;
 pub mod manpage_tool;
 pub mod mcp_tool;
 pub mod notify_tool;
