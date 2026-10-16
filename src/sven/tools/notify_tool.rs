@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use tokio::process::Command;
 
 use schemars::JsonSchema;
@@ -9,18 +11,27 @@ use crate::sven::tools::subprocess;
 /// The project logo, embedded at compile time so notifications carry the
 /// sven icon no matter where the binary runs from. `notify-send --icon`
 /// takes a filename or icon name, not image bytes, so it is written to a
-/// temp file at send time.
-const LOGO_SVG: &[u8] = include_bytes!("../../../logo.svg");
+/// temp file once per process.
+const LOGO_SVG: &[u8] = include_bytes!("../../../assets/logo.svg");
 
 /// Write the embedded logo to a temp file and return its path.
 ///
-/// The file is rewritten on every send: it is ~1.5 KB, and this keeps the
-/// icon correct when a newer binary embeds a newer logo. Returns `None`
-/// if the write fails — a missing icon must not block the notification.
+/// The file is written at most once per process (the `OnceLock` caches
+/// the result, including a `None` failure): the logo is embedded in the
+/// binary, so it cannot change while the process runs, and rewriting it
+/// on every send would only burn SSD write cycles. A newer binary
+/// simply embeds a newer logo and writes it on its first send. Returns
+/// `None` if the write fails — a missing icon must not block the
+/// notification.
 fn logo_icon_path() -> Option<String> {
-    let path = std::env::temp_dir().join("sven-logo.svg");
-    std::fs::write(&path, LOGO_SVG).ok()?;
-    Some(path.to_string_lossy().into_owned())
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join("sven-logo.svg");
+            std::fs::write(&path, LOGO_SVG).ok()?;
+            Some(path.to_string_lossy().into_owned())
+        })
+        .clone()
 }
 
 #[derive(Deserialize, Debug, JsonSchema)]
@@ -169,11 +180,21 @@ mod tests {
     }
 
     #[test]
-    fn logo_is_written_to_a_temp_file() {
+    fn logo_is_written_once_with_the_embedded_bytes() {
+        // first call writes the temp file with the embedded logo
         let path = logo_icon_path().expect("temp dir must be writable");
         let bytes = std::fs::read(&path).expect("logo temp file must be readable");
         assert_eq!(bytes, LOGO_SVG);
         assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"));
+
+        // the OnceLock caches the path, so a second call must not rewrite
+        // the file: delete it, call again, and it must stay gone. Kept in
+        // the same test as the write check above — both share the
+        // process-global cache, and separate tests would race under the
+        // default multi-threaded test harness.
+        std::fs::remove_file(&path).expect("logo temp file must be deletable");
+        assert_eq!(logo_icon_path(), Some(path.clone()));
+        assert!(!std::path::Path::new(&path).exists(), "cached path must not be rewritten");
     }
 
     // End-to-end through Tool::execute, not just the helpers: this stays
