@@ -2,8 +2,8 @@
   <title id="sven-logo-title">sven — a terminal coding agent for local LLMs</title>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1c2030"/>
-      <stop offset="1" stop-color="#0c0e15"/>
+      <stop offset="0" stop-color="#00000000"/>
+      <stop offset="1" stop-color="#00000000"/>
     </linearGradient>
     <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#12151f"/>
