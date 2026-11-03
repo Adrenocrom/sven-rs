@@ -43,6 +43,33 @@ pub async fn run_stderr(command: &mut Command) -> Result<String, Box<dyn std::er
     Ok(String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
+/// Run `command` to completion and return stdout and stderr combined.
+///
+/// Some programs split one logical report across both streams: `cargo test`
+/// writes the test result summary and `println!` output to stdout, but
+/// compile errors and panic messages to stderr. A tool that wants the whole
+/// picture must merge them. stdout comes first, then stderr, so the model
+/// reads the summary before the diagnostics that explain it.
+///
+/// A non-zero exit status is an error carrying the same combined text:
+/// `cargo test` exits non-zero when tests fail, and that output is exactly
+/// what the model needs to fix them.
+pub async fn run_combined(command: &mut Command) -> Result<String, Box<dyn std::error::Error>> {
+    let out = command.output().await?;
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(format!(
+            "{} exited with {}: {}",
+            command.as_std().get_program().to_string_lossy(),
+            out.status,
+            combined.trim()
+        )
+        .into());
+    }
+    Ok(combined)
+}
+
 /// Return `path` in a form the called program reads as an operand, never
 /// as one of its own options.
 ///
@@ -74,5 +101,22 @@ mod tests {
         assert_eq!(as_operand("src"), "src");
         assert_eq!(as_operand("./-weird"), "./-weird");
         assert_eq!(as_operand("/abs/path"), "/abs/path");
+    }
+
+    #[tokio::test]
+    async fn combined_merges_stdout_then_stderr() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("echo out; echo err >&2");
+        let combined = run_combined(&mut command).await.unwrap();
+        assert_eq!(combined, "out\nerr\n");
+    }
+
+    #[tokio::test]
+    async fn combined_reports_failure_with_both_streams() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("echo out; echo boom >&2; exit 1");
+        let err = run_combined(&mut command).await.unwrap_err().to_string();
+        assert!(err.contains("out"), "stdout missing from error: {err}");
+        assert!(err.contains("boom"), "stderr missing from error: {err}");
     }
 }

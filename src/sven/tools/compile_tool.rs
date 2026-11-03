@@ -35,7 +35,9 @@ async fn compile_rust() -> Result<String, Box<dyn std::error::Error>> {
 async fn test_rust() -> Result<String, Box<dyn std::error::Error>> {
     let mut command = Command::new("cargo");
     command.arg("test");
-    Ok(subprocess::run_stderr(&mut command).await?)
+    // stdout carries the test summary and println! output, stderr the
+    // compile errors and panics — the model needs both to fix failures.
+    Ok(subprocess::run_combined(&mut command).await?)
 }
 
 
