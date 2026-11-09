@@ -190,6 +190,9 @@ pub struct AgentConfig {
     pub data_dir: String,
     /// Sent as `Authorization: Bearer …`; only the OpenAI backend uses it.
     pub api_key: Option<String>,
+    /// Cap on tool results kept in context within one run; `None`
+    /// disables trimming (see `ChatHistory::max_tool_calls`).
+    pub max_tool_calls: Option<usize>,
 }
 
 pub struct Agent {
@@ -204,7 +207,11 @@ impl Agent {
         let stats = StatsStore::load(&agent_config.data_dir);
         Agent {
             client: Client::new(),
-            history: ChatHistory::new(&agent_config.system_prompt, agent_config.backend.clone()),
+            history: ChatHistory::new(
+                &agent_config.system_prompt,
+                agent_config.backend.clone(),
+                agent_config.max_tool_calls,
+            ),
             config: agent_config,
             stats,
         }

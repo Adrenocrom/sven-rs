@@ -146,7 +146,12 @@ start with empty model sections.
 | `/close` | Exit                            |
 
 Conversation history persists across prompts within a session; `/clear`
-resets it.
+resets it. Within a run, the tool round can be bounded via the
+`max_tool_calls` config field: at most that many tool results are kept in
+context, and when more accumulate the oldest complete rounds are dropped
+(with a note telling the model what was removed, so it can re-run a tool
+instead of assuming an earlier result is still visible). The field is
+optional — when it is missing or `null`, nothing is ever trimmed.
 
 ## Configuration
 
@@ -162,6 +167,7 @@ left untouched (the built-in defaults are used for that session):
   "model": "gemma4:12b",
   "host": "http://localhost:11434",
   "system_prompt": "",
+  "max_tool_calls": null,
   "options": {
     "temperature": 0.1,
     "num_ctx": 32000,
@@ -180,6 +186,9 @@ left untouched (the built-in defaults are used for that session):
 
 `data_dir` is where the skills store (`<data_dir>/skills`), the history and
 `statistics.json` live; a leading `~` is expanded to `$HOME`.
+
+`max_tool_calls` bounds the tool round within one run (see above); it is
+optional — `null` or missing means no trimming.
 
 The `options` travel with each request: `temperature` applies to every
 backend; `num_ctx` (the context window) and `num_predict` (an output cap)

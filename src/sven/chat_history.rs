@@ -37,15 +37,23 @@ pub struct MessageResponse {
     pub usage: TokenUsage,
 }
 
+/// Prefix of the note `trim_tool_history` leaves when it drops rounds,
+/// so repeated trims within one turn replace rather than stack notes.
+const TRIM_NOTE_PREFIX: &str = "[context trimmed:";
+
 /// Conversation history. `history` holds the durable messages (system,
 /// user, final assistant answers); `tool_history` holds the messages of
-/// the tool round-robin currently in progress. Both are concatenated in
-/// order for each request; the tool round is dropped when the next user
-/// message arrives.
+/// the tool round currently in progress, bounded to `max_tool_calls`
+/// tool results when set — beyond that the oldest complete rounds are
+/// dropped. Both are concatenated in order for each request; the tool
+/// round is dropped entirely when the next user message arrives.
 #[derive(Debug)]
 pub struct ChatHistory {
     history: Vec<Value>,
     tool_history: Vec<Value>,
+    /// Cap on tool results kept in `tool_history`; the oldest complete
+    /// rounds are dropped once it is exceeded. `None` disables the cap.
+    max_tool_calls: Option<usize>,
     system_prompt: String,
     /// Attachments are serialized into each message as it is pushed, in
     /// this backend's wire format — the stored `Value`s are sent verbatim
@@ -64,23 +72,105 @@ pub struct ChatHistory {
 }
 
 impl ChatHistory {
-    pub fn new(system_prompt: &str, backend: Backend) -> Self {
+    pub fn new(system_prompt: &str, backend: Backend, max_tool_calls: Option<usize>) -> Self {
         Self {
-            history: vec![ChatHistory::system(system_prompt)],
+            history: vec![ChatHistory::system(system_prompt, max_tool_calls)],
             tool_history: Vec::new(),
+            max_tool_calls,
             system_prompt: system_prompt.to_string(),
             backend,
             pending_tool_attachments: Vec::new(),
         }
     }
 
-    fn system(prompt: &str) -> Value {
+    fn system(prompt: &str, max_tool_calls: Option<usize>) -> Value {
         let now = Local::now();
-        let system_prompt = format!("{}\nCurrent Date: {}", prompt, now);
+        let mut system_prompt = format!("{}\nCurrent Date: {}", prompt, now);
+
+        if let Some(max_tool_calls) = max_tool_calls {
+            system_prompt += format!("\nMax tool calls in context: {}", max_tool_calls).as_str();
+        }
+
+
         json!({
             "role": "system",
             "content": system_prompt
         })
+    }
+
+    /// Push onto `tool_history` and keep it bounded: once more than
+    /// `max_tool_calls` tool results are stored, the oldest complete
+    /// rounds are dropped. Every push goes through here, so the cap
+    /// cannot be bypassed by a future call site.
+    fn push_tool_entry(&mut self, entry: Value) {
+        self.tool_history.push(entry);
+        self.trim_tool_history();
+    }
+
+    /// Drop the oldest complete tool rounds until at most
+    /// `max_tool_calls` tool results remain. A round is one assistant
+    /// message carrying `tool_calls` plus its `tool` result(s) (and any
+    /// attachment-flush user message that followed); removing a partial
+    /// round would strand a `role: "tool"` message without its
+    /// `tool_calls` assistant message, which OpenAI-compatible servers
+    /// reject with a 400. A note is left at the front so the model
+    /// knows earlier results existed and were dropped — it can re-run
+    /// a tool instead of assuming work it no longer sees was never
+    /// done.
+    fn trim_tool_history(&mut self) {
+        let Some(max_tool_calls) = self.max_tool_calls else {
+            return; // no cap configured — keep everything
+        };
+        //let mut dropped = false;
+        while self.tool_history.iter().filter(|m| m["role"] == "tool").count()
+            > max_tool_calls
+        {
+            //dropped = true;
+            // start of the oldest round: the first assistant message
+            // carrying tool_calls
+            let round_start = self.tool_history.iter().position(|m| {
+                m["role"] == "assistant" && m.get("tool_calls").is_some()
+            });
+            match round_start {
+                Some(start) => {
+                    // drop up to (not including) the next round's
+                    // assistant message, so an entire round disappears
+                    let end = self.tool_history[start + 1..]
+                        .iter()
+                        .position(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+                        .map(|d| start + 1 + d)
+                        .unwrap_or(self.tool_history.len());
+                    self.tool_history.drain(start..end);
+                }
+                // no round boundary (e.g. a stray flush/note before any
+                // tool_calls): drop the oldest entry
+                None => {
+                    self.tool_history.remove(0);
+                }
+            }
+        }
+        //// one note per turn, not one per trim: the note is only added
+        //// when the front isn't already one
+        //let noted = self.tool_history.first().is_some_and(|m| {
+        //    m["role"] == "assistant"
+        //        && m["content"]
+        //            .as_str()
+        //            .is_some_and(|c| c.starts_with(TRIM_NOTE_PREFIX))
+        //});
+        //if dropped && !noted {
+        //    self.tool_history.insert(
+        //        0,
+        //        json!({
+        //            "role": "assistant",
+        //            "content": format!(
+        //                "{} the oldest tool rounds were dropped to keep at most {} \
+        //                 tool results in context — re-run a tool if you need an \
+        //                 earlier result]",
+        //                TRIM_NOTE_PREFIX, max_tool_calls
+        //            ),
+        //        }),
+        //    );
+        //}
     }
 
     /// Add the user's prompt, with optional attachments (`@path`
@@ -132,7 +222,7 @@ impl ChatHistory {
                 }
             }
             entry["tool_calls"] = json!(tool_calls);
-            self.tool_history.push(entry);
+            self.push_tool_entry(entry);
             return;
         }
 
@@ -165,7 +255,7 @@ impl ChatHistory {
                 self.pending_tool_attachments.extend(output.attachments.clone())
             }
         }
-        self.tool_history.push(entry);
+        self.push_tool_entry(entry);
     }
 
     /// Deliver the tool attachments buffered by `tool` on an
@@ -187,7 +277,7 @@ impl ChatHistory {
                         use them as if they were part of the tool output]",
         });
         self.backend.apply_user_attachments(&mut entry, &attachments);
-        self.tool_history.push(entry);
+        self.push_tool_entry(entry);
     }
 
     /// Remove every attachment from the stored messages — each stripped
@@ -208,7 +298,7 @@ impl ChatHistory {
     /// for the round-cap notice), keeping chronological order with the
     /// surrounding tool messages.
     pub fn assistant_note(&mut self, content: &str) {
-        self.tool_history.push(json!({
+        self.push_tool_entry(json!({
             "role": "assistant",
             "content": content,
         }));
@@ -268,7 +358,7 @@ mod tests {
 
     #[test]
     fn orders_messages_across_tool_rounds() {
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("question", &[]);
         history.assistant(&response("", vec![tool_call("ReadTool")]));
         history.tool(&ToolOutput::text("file contents"), "ReadTool", None);
@@ -290,7 +380,7 @@ mod tests {
 
     #[test]
     fn pop_user_removes_only_a_trailing_user_message() {
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.pop_user(); // trailing message is the system prompt — no-op
         assert_eq!(history.get().len(), 1);
 
@@ -306,7 +396,7 @@ mod tests {
 
     #[test]
     fn tool_results_carry_the_call_id() {
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("q", &[]);
         history.assistant(&response("", vec![json!({
             "id": "call_1",
@@ -322,7 +412,7 @@ mod tests {
 
     #[test]
     fn tool_calls_sent_back_always_carry_type_function() {
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("q", &[]);
         // Ollama-shaped call: no `type`, object arguments — the field is
         // defaulted so the history is valid for any backend
@@ -336,7 +426,7 @@ mod tests {
 
     #[test]
     fn clear_resets_to_the_system_prompt() {
-        let mut history = ChatHistory::new("be helpful", Backend::Ollama);
+        let mut history = ChatHistory::new("be helpful", Backend::Ollama, None);
         history.user("hi", &[]);
         history.clear();
         let messages = history.get();
@@ -348,7 +438,7 @@ mod tests {
     #[test]
     fn user_attachments_serialize_per_backend() {
         // Ollama: a message-level `images` array, content stays a string
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("look at this", &[image()]);
         let messages = history.get();
         let message = messages.last().unwrap();
@@ -356,7 +446,7 @@ mod tests {
         assert_eq!(message["images"], json!(["aGk="]));
 
         // OpenAI: `content` becomes an array of typed parts
-        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        let mut history = ChatHistory::new("sys", Backend::OpenAI, None);
         history.user("look at this", &[image()]);
         let messages = history.get();
         let message = messages.last().unwrap();
@@ -370,7 +460,7 @@ mod tests {
 
         // no attachments → the message stays a plain string, exactly as
         // before the multimodal support
-        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        let mut history = ChatHistory::new("sys", Backend::OpenAI, None);
         history.user("plain", &[]);
         let messages = history.get();
         let message = messages.last().unwrap();
@@ -382,7 +472,7 @@ mod tests {
     fn tool_attachments_ride_on_ollama_and_flush_on_openai() {
         // Ollama's message object carries `images` on any role, so a
         // tool result can show the model an image
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("q", &[]);
         history.tool(
             &ToolOutput { text: "see".to_string(), attachments: vec![image()] },
@@ -397,7 +487,7 @@ mod tests {
         // the chat-completions wire format has no binary parts in tool
         // messages — the attachments are buffered and flushed as one
         // user message once the round's tool results are complete
-        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        let mut history = ChatHistory::new("sys", Backend::OpenAI, None);
         history.user("q", &[]);
         history.tool(
             &ToolOutput { text: "see".to_string(), attachments: vec![image()] },
@@ -428,10 +518,151 @@ mod tests {
     }
 
     #[test]
+    fn tool_history_is_capped_dropping_oldest_rounds() {
+        let mut history = ChatHistory::new("sys", Backend::Ollama, Some(2));
+
+        // two full rounds (assistant tool_calls + tool result) = 2 tool
+        // results, exactly at the cap — nothing is dropped
+        for name in ["ReadTool", "GrepTool"] {
+            history.assistant(&response("", vec![tool_call(name)]));
+            history.tool(&ToolOutput::text("ok"), name, None);
+        }
+        // system prompt + two rounds of two messages each
+        assert_eq!(history.get().len(), 5);
+
+        // a third round overflows the cap → the first round is dropped,
+        // leaving the trim note plus the two newest rounds, still paired
+        history.assistant(&response("", vec![tool_call("FindTool")]));
+        history.tool(&ToolOutput::text("ok"), "FindTool", None);
+        let messages = history.get();
+        assert_eq!(messages[1]["role"], "assistant");
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(TRIM_NOTE_PREFIX));
+        let roles: Vec<_> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            roles,
+            ["system", "assistant", "assistant", "tool", "assistant", "tool"]
+        );
+    }
+
+    #[test]
+    fn tool_history_cap_counts_tool_results_not_entries() {
+        let mut history = ChatHistory::new("sys", Backend::Ollama, Some(2));
+
+        // one round with three parallel calls: 3 tool results exceed the
+        // cap of 2, so the whole round is dropped — the cap counts tool
+        // results, not messages
+        history.assistant(&response(
+            "",
+            vec![tool_call("ReadTool"), tool_call("GrepTool"), tool_call("FindTool")],
+        ));
+        for name in ["ReadTool", "GrepTool", "FindTool"] {
+            history.tool(&ToolOutput::text("ok"), name, None);
+        }
+        assert!(history.get().iter().all(|m| m["role"] != "tool"));
+
+        // the next round starts clean and is kept, behind the trim note
+        history.assistant(&response("", vec![tool_call("TimeTool")]));
+        history.tool(&ToolOutput::text("ok"), "TimeTool", None);
+        let messages = history.get();
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(TRIM_NOTE_PREFIX));
+        let roles: Vec<_> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["system", "assistant", "assistant", "tool"]);
+    }
+
+    #[test]
+    fn tool_history_cap_drops_flushed_attachments_with_their_round() {
+        let mut history = ChatHistory::new("sys", Backend::OpenAI, Some(1));
+
+        // round 1: a tool result plus its attachment-flush user message
+        history.assistant(&response("", vec![tool_call("ShotTool")]));
+        history.tool(
+            &ToolOutput { text: "see".to_string(), attachments: vec![image()] },
+            "ShotTool",
+            None,
+        );
+        history.flush_tool_attachments();
+        // system + assistant + tool + the flush user message
+        assert_eq!(history.get().len(), 4);
+
+        // round 2 overflows the cap → round 1 disappears entirely,
+        // including the flush message, leaving the trim note plus a
+        // clean pair
+        history.assistant(&response("", vec![tool_call("ReadTool")]));
+        history.tool(&ToolOutput::text("ok"), "ReadTool", None);
+        let messages = history.get();
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(TRIM_NOTE_PREFIX));
+        let roles: Vec<_> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["system", "assistant", "assistant", "tool"]);
+    }
+
+    #[test]
+    fn tool_history_cap_never_strands_a_tool_result() {
+        let mut history = ChatHistory::new("sys", Backend::Ollama, Some(1));
+
+        // rounds with interleaved assistant notes (as the round-cap
+        // notice produces) — trimming must still keep every tool result
+        // paired with its assistant tool_calls message
+        for name in ["ReadTool", "GrepTool", "FindTool"] {
+            history.assistant(&response("", vec![tool_call(name)]));
+            history.tool(&ToolOutput::text("ok"), name, None);
+            history.assistant_note("note");
+        }
+        let messages = history.get();
+        // system + trim note + one round (assistant + tool) + its note
+        assert_eq!(messages.len(), 5);
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(TRIM_NOTE_PREFIX));
+        assert_eq!(messages[2]["role"], "assistant");
+        assert!(messages[2].get("tool_calls").is_some());
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[4]["role"], "assistant");
+        assert!(messages[4].get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn no_cap_keeps_the_tool_round_unbounded() {
+        // `max_tool_calls: null` in the config means no trimming: every
+        // round stays in context, no trim note is ever inserted
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
+        for name in ["ReadTool", "GrepTool", "FindTool", "TimeTool"] {
+            history.assistant(&response("", vec![tool_call(name)]));
+            history.tool(&ToolOutput::text("ok"), name, None);
+        }
+        let messages = history.get();
+        // system + four rounds of two messages each — nothing dropped
+        assert_eq!(messages.len(), 9);
+        assert!(!messages.iter().any(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.starts_with(TRIM_NOTE_PREFIX))
+        }));
+    }
+
+    #[test]
     fn strip_attachments_removes_media_and_notes_the_model() {
         // OpenAI: the content parts collapse back to the plain prompt,
         // with a note naming the dropped modality
-        let mut history = ChatHistory::new("sys", Backend::OpenAI);
+        let mut history = ChatHistory::new("sys", Backend::OpenAI, None);
         history.user("look at this", &[image()]);
         history.user("plain", &[]);
         assert!(history.strip_attachments());
@@ -448,7 +679,7 @@ mod tests {
         assert!(!history.strip_attachments());
 
         // Ollama: the images array is removed, the note is appended
-        let mut history = ChatHistory::new("sys", Backend::Ollama);
+        let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         history.user("look at this", &[image()]);
         assert!(history.strip_attachments());
         let messages = history.get();

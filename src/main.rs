@@ -102,6 +102,7 @@ async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
         backend: config.backend,
         data_dir: config.data_dir,
         api_key,
+        max_tool_calls: config.max_tool_calls,
     })
 }
 

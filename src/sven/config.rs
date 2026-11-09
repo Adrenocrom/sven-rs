@@ -58,6 +58,12 @@ pub struct SvenConfig {
     pub host: String,
     pub system_prompt: String,
     pub options: ChatOptions,
+    /// Cap on tool results kept in context within one run. When more
+    /// accumulate, the oldest complete tool rounds are dropped (with a
+    /// note telling the model what was removed). `None` (or the field
+    /// missing from the config) disables the cap entirely — the tool
+    /// round grows unbounded.
+    pub max_tool_calls: Option<usize>,
     /// MCP servers to connect to at startup; the key is the server name
     /// used in the tool names (`mcp__<name>__<tool>`).
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
@@ -72,6 +78,7 @@ impl Default for SvenConfig {
             system_prompt: "".to_string(),
             options: ChatOptions::default(),
             backend: Backend::Ollama,
+            max_tool_calls: None,
             mcp_servers: BTreeMap::new(),
         }
     }
@@ -172,6 +179,28 @@ mod tests {
             serde_json::from_str(r#"{"options": {"temperature": 0.5}}"#).unwrap();
         assert_eq!(config.options.temperature, 0.5);
         assert_eq!(config.options.num_ctx, Some(32000));
+    }
+
+    #[test]
+    fn max_tool_calls_is_optional_and_defaults_to_no_cap() {
+        // missing → None → no trimming
+        let config: SvenConfig = serde_json::from_str(r#"{"model": "llama3"}"#).unwrap();
+        assert_eq!(config.max_tool_calls, None);
+
+        // explicit null → None
+        let config: SvenConfig =
+            serde_json::from_str(r#"{"max_tool_calls": null}"#).unwrap();
+        assert_eq!(config.max_tool_calls, None);
+
+        // set → the cap
+        let config: SvenConfig =
+            serde_json::from_str(r#"{"max_tool_calls": 20}"#).unwrap();
+        assert_eq!(config.max_tool_calls, Some(20));
+
+        // the default config written to disk must round-trip the field
+        let json = serde_json::to_string_pretty(&SvenConfig::default()).unwrap();
+        let reloaded: SvenConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(reloaded.max_tool_calls, None);
     }
 
     #[test]
