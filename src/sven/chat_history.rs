@@ -317,7 +317,7 @@ impl ChatHistory {
 
     pub fn clear(&mut self) {
         self.history.clear();
-        self.history.push(ChatHistory::system(&self.system_prompt));
+        self.history.push(ChatHistory::system(&self.system_prompt, self.max_tool_calls));
         self.tool_history.clear();
         self.pending_tool_attachments.clear();
     }
