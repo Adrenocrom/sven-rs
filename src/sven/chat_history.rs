@@ -37,10 +37,6 @@ pub struct MessageResponse {
     pub usage: TokenUsage,
 }
 
-/// Prefix of the note `trim_tool_history` leaves when it drops rounds,
-/// so repeated trims within one turn replace rather than stack notes.
-const TRIM_NOTE_PREFIX: &str = "[context trimmed:";
-
 /// Conversation history. `history` holds the durable messages (system,
 /// user, final assistant answers); `tool_history` holds the messages of
 /// the tool round currently in progress, bounded to `max_tool_calls`
@@ -113,10 +109,7 @@ impl ChatHistory {
     /// attachment-flush user message that followed); removing a partial
     /// round would strand a `role: "tool"` message without its
     /// `tool_calls` assistant message, which OpenAI-compatible servers
-    /// reject with a 400. A note is left at the front so the model
-    /// knows earlier results existed and were dropped — it can re-run
-    /// a tool instead of assuming work it no longer sees was never
-    /// done.
+    /// reject with a 400.
     fn trim_tool_history(&mut self) {
         let Some(max_tool_calls) = self.max_tool_calls else {
             return; // no cap configured — keep everything
@@ -531,23 +524,25 @@ mod tests {
         assert_eq!(history.get().len(), 5);
 
         // a third round overflows the cap → the first round is dropped,
-        // leaving the trim note plus the two newest rounds, still paired
+        // leaving the two newest rounds, still paired
         history.assistant(&response("", vec![tool_call("FindTool")]));
         history.tool(&ToolOutput::text("ok"), "FindTool", None);
         let messages = history.get();
-        assert_eq!(messages[1]["role"], "assistant");
-        assert!(messages[1]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with(TRIM_NOTE_PREFIX));
         let roles: Vec<_> = messages
             .iter()
             .map(|m| m["role"].as_str().unwrap())
             .collect();
         assert_eq!(
             roles,
-            ["system", "assistant", "assistant", "tool", "assistant", "tool"]
+            ["system", "assistant", "tool", "assistant", "tool"]
         );
+        // the oldest round is gone — only the two newest tool names remain
+        let names: Vec<_> = messages
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["tool_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["GrepTool", "FindTool"]);
     }
 
     #[test]
@@ -566,19 +561,15 @@ mod tests {
         }
         assert!(history.get().iter().all(|m| m["role"] != "tool"));
 
-        // the next round starts clean and is kept, behind the trim note
+        // the next round starts clean and is kept
         history.assistant(&response("", vec![tool_call("TimeTool")]));
         history.tool(&ToolOutput::text("ok"), "TimeTool", None);
         let messages = history.get();
-        assert!(messages[1]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with(TRIM_NOTE_PREFIX));
         let roles: Vec<_> = messages
             .iter()
             .map(|m| m["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, ["system", "assistant", "assistant", "tool"]);
+        assert_eq!(roles, ["system", "assistant", "tool"]);
     }
 
     #[test]
@@ -597,20 +588,15 @@ mod tests {
         assert_eq!(history.get().len(), 4);
 
         // round 2 overflows the cap → round 1 disappears entirely,
-        // including the flush message, leaving the trim note plus a
-        // clean pair
+        // including the flush message, leaving a clean pair
         history.assistant(&response("", vec![tool_call("ReadTool")]));
         history.tool(&ToolOutput::text("ok"), "ReadTool", None);
         let messages = history.get();
-        assert!(messages[1]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with(TRIM_NOTE_PREFIX));
         let roles: Vec<_> = messages
             .iter()
             .map(|m| m["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, ["system", "assistant", "assistant", "tool"]);
+        assert_eq!(roles, ["system", "assistant", "tool"]);
     }
 
     #[test]
@@ -626,23 +612,19 @@ mod tests {
             history.assistant_note("note");
         }
         let messages = history.get();
-        // system + trim note + one round (assistant + tool) + its note
-        assert_eq!(messages.len(), 5);
-        assert!(messages[1]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with(TRIM_NOTE_PREFIX));
-        assert_eq!(messages[2]["role"], "assistant");
-        assert!(messages[2].get("tool_calls").is_some());
-        assert_eq!(messages[3]["role"], "tool");
-        assert_eq!(messages[4]["role"], "assistant");
-        assert!(messages[4].get("tool_calls").is_none());
+        // system + one round (assistant + tool) + its note
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert!(messages[1].get("tool_calls").is_some());
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[3]["role"], "assistant");
+        assert!(messages[3].get("tool_calls").is_none());
     }
 
     #[test]
     fn no_cap_keeps_the_tool_round_unbounded() {
         // `max_tool_calls: null` in the config means no trimming: every
-        // round stays in context, no trim note is ever inserted
+        // round stays in context
         let mut history = ChatHistory::new("sys", Backend::Ollama, None);
         for name in ["ReadTool", "GrepTool", "FindTool", "TimeTool"] {
             history.assistant(&response("", vec![tool_call(name)]));
@@ -651,11 +633,6 @@ mod tests {
         let messages = history.get();
         // system + four rounds of two messages each — nothing dropped
         assert_eq!(messages.len(), 9);
-        assert!(!messages.iter().any(|m| {
-            m["content"]
-                .as_str()
-                .is_some_and(|c| c.starts_with(TRIM_NOTE_PREFIX))
-        }));
     }
 
     #[test]
