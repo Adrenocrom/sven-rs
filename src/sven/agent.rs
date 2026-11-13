@@ -193,6 +193,12 @@ pub struct AgentConfig {
     /// Cap on tool results kept in context within one run; `None`
     /// disables trimming (see `ChatHistory::max_tool_calls`).
     pub max_tool_calls: Option<usize>,
+    /// Whether this agent was spawned by `SpawnAgentTool`. A sub-agent
+    /// reuses the whole config but must not send its own run-finished
+    /// notification — the parent's notification covers the whole run,
+    /// and one per sub-agent would be noise (the sub-agent's streamed
+    /// answer *is* printed, like any tool's activity).
+    pub subagent: bool,
 }
 
 pub struct Agent {
@@ -224,7 +230,11 @@ impl Agent {
     /// prompt as bracketed notes: the model must learn why a mentioned
     /// file is missing, or it will confidently answer about a file it
     /// never saw.
-    pub async fn run(&mut self, message: &str) {
+    ///
+    /// Returns the run's outcome — the final answer text included, so
+    /// `SpawnAgentTool` can hand a sub-agent's answer back to the
+    /// spawning model as the tool result. The REPL ignores it.
+    pub async fn run(&mut self, message: &str) -> RunOutcome {
         let (attachments, warnings) = expand(message, &self.config.backend);
         for warning in &warnings {
             eprintln!("... {}", warning);
@@ -252,7 +262,10 @@ impl Agent {
             &outcome,
             elapsed,
         );
-        self.notify_finished(elapsed, &summary).await;
+        if !self.config.subagent {
+            self.notify_finished(elapsed, &summary).await;
+        }
+        outcome
     }
 
     /// Print the overall statistics accumulated in `statistics.json`.
@@ -310,7 +323,7 @@ impl Agent {
                     // doesn't start with an unanswered prompt
                     self.history.pop_user();
                     eprintln!("error: {}", e);
-                    return RunOutcome { rounds, tool_calls, status: RunStatus::Error };
+                    return RunOutcome::error(rounds, tool_calls, e.to_string());
                 }
             };
 
@@ -337,7 +350,11 @@ impl Agent {
                 }
                 self.history.pop_user();
                 eprintln!("error: {} — {}", status, truncate(&body, 500));
-                return RunOutcome { rounds, tool_calls, status: RunStatus::Error };
+                return RunOutcome::error(
+                    rounds,
+                    tool_calls,
+                    format!("{} — {}", status, truncate(&body, 500)),
+                );
             }
 
             let message: MessageResponse = self.handle_chunks(&mut response).await;
@@ -353,7 +370,8 @@ impl Agent {
                 // (or mid-thought, with no content at all), so the
                 // truncation is reported instead of silently returning
                 // to the prompt.
-                if message.finish_reason.as_deref() == Some("length") {
+                let truncated = message.finish_reason.as_deref() == Some("length");
+                if truncated {
                     println!(
                         "{}",
                         term::red(
@@ -362,7 +380,14 @@ impl Agent {
                         )
                     );
                 }
-                return RunOutcome { rounds, tool_calls, status: RunStatus::Finished };
+                return RunOutcome {
+                    rounds,
+                    tool_calls,
+                    status: RunStatus::Finished,
+                    answer: message.content,
+                    answer_truncated: truncated,
+                    error: None,
+                };
             }
             for tool_call in message.tool_calls {
                 let (tool_name, tool_params, tool_call_id) = match parse_tool_call(&tool_call) {
@@ -401,7 +426,14 @@ impl Agent {
         );
         println!("{}", term::red(&note));
         self.history.assistant_note(&note);
-        RunOutcome { rounds, tool_calls, status: RunStatus::RoundCap }
+        RunOutcome {
+            rounds,
+            tool_calls,
+            status: RunStatus::RoundCap,
+            answer: String::new(),
+            answer_truncated: false,
+            error: None,
+        }
     }
 
     /// Build the chat request body for the configured backend. Ollama

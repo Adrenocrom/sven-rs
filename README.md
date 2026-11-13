@@ -324,7 +324,27 @@ Behavior worth knowing:
 | `AddSkillTool`         | Store new knowledge as a skill                      |
 | `UpdateSkillTool`      | Update a skill's description, tags and/or body      |
 | `RemoveSkillTool`      | Remove a skill and its directory                    |
+| `SpawnAgentTool`       | Delegate one task to a fresh sub-agent (see below)  |
 | `mcp__<server>__<tool>` | Any tool of a configured MCP server (see above)     |
+
+### Sub-agents
+
+`SpawnAgentTool` lets the model delegate a self-contained task to a fresh
+agent: it takes a `system_prompt` (the sub-agent's role and instructions;
+empty reuses the session's) and a `user_prompt` (the task — fully
+self-contained, because the sub-agent sees nothing of the conversation it
+was spawned from), runs the sub-agent to completion, and returns its final
+answer as the tool result.
+
+A sub-agent reuses the session's config wholesale — host, model, backend,
+options, data dir, API key — so it talks to the same server the parent was
+configured for, including any `--host`/`--model` command-line overrides.
+It gets every built-in tool plus the session's MCP tools (sharing the
+parent's connections), but not `SpawnAgentTool` itself: sub-agents cannot
+spawn agents, so a model cannot run away into recursive spawning. Its
+work is streamed to the terminal while it runs, its run is recorded in
+`statistics.json` like any other, and it does not send its own
+run-finished notification — the parent's covers the whole run.
 
 ## Skills
 
@@ -364,6 +384,11 @@ path-confinement check used by the file tools.
   environment plus the configured `env` entries. MCP tools are remote
   code by definition: they run whatever the server implements, so only
   list servers you trust.
+- **Sub-agents:** `SpawnAgentTool` is the one tool a sub-agent does not
+  get, so delegation is exactly one level deep — a model cannot spawn
+  agents recursively. A sub-agent otherwise has the parent's tool set
+  (including the file tools, with the same path confinement) and runs
+  against the same server.
 
 ## Architecture
 
@@ -391,13 +416,14 @@ path-confinement check used by the file tools.
 - `src/sven/stats.rs` — lifetime run statistics (`statistics.json`):
   per-run recording, per-model and per-host buckets, the `/stats` summary.
 - `src/sven/tools/*` — one file per tool; `subprocess.rs` holds the shared
-  exit-status/stderr-aware command runner.
+  exit-status/stderr-aware command runner, `spawn_agent_tool.rs` the
+  sub-agent delegation tool.
 
 ### Adding a tool
 
 Define a params struct (its doc comments become the schema descriptions the
-model sees), implement the tool with the `tool!` macro, and register it in
-`main.rs`:
+model sees), implement the tool with the `tool!` macro, and add it to
+`builtin_tools()` in `src/sven/tools/mod.rs` (so sub-agents get it too):
 
 ```rust
 #[derive(Deserialize, Debug, JsonSchema)]

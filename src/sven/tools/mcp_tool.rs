@@ -15,6 +15,11 @@ pub fn mcp_tool_name(server: &str, tool: &str) -> String {
     format!("mcp__{}__{}", server, tool)
 }
 
+/// The MCP tool wrapper. `Clone` is deliberate: `SpawnAgentTool` holds
+/// the session's MCP tools and registers clones in each sub-agent's
+/// registry — the connection lives behind the `Arc`, so every clone
+/// (and the parent) shares one client.
+#[derive(Clone)]
 pub struct McpTool {
     server: String,
     tool: String,

@@ -38,13 +38,42 @@ pub enum RunStatus {
     RoundCap,
 }
 
-/// What `Agent::run_rounds` reports back for the statistics: how many LLM
-/// rounds and tool calls the run took, and how it ended.
+/// What `Agent::run_rounds` reports back for a run: how many LLM
+/// rounds and tool calls it took, how it ended — and the final answer,
+/// whether that answer was cut off by the output cap, and the error
+/// message when a request failed. The statistics fold in the counters
+/// and the status; the answer fields are for `SpawnAgentTool`, which
+/// returns the sub-agent's answer to the spawning model as the tool
+/// result.
 #[derive(Debug)]
 pub struct RunOutcome {
     pub rounds: u64,
     pub tool_calls: u64,
     pub status: RunStatus,
+    /// The final answer text; empty when the run errored or stopped at
+    /// the round cap.
+    pub answer: String,
+    /// Whether `answer` was cut off by the output token cap
+    /// (`finish_reason: "length"` — OpenAI-compatible backends only;
+    /// Ollama has no equivalent signal).
+    pub answer_truncated: bool,
+    /// The error message of the failed request, when the run errored.
+    pub error: Option<String>,
+}
+
+impl RunOutcome {
+    /// A run that failed on a request — the counters it had reached,
+    /// plus the error message.
+    pub fn error(rounds: u64, tool_calls: u64, error: String) -> Self {
+        Self {
+            rounds,
+            tool_calls,
+            status: RunStatus::Error,
+            answer: String::new(),
+            answer_truncated: false,
+            error: Some(error),
+        }
+    }
 }
 
 /// Counters for one bucket — the whole history, or one model / one host.
@@ -195,6 +224,11 @@ impl StatsStore {
     /// and per host — and persist them. A write failure is only reported
     /// on stderr — saving statistics must not break the run that just
     /// finished.
+    ///
+    /// The file is re-read first: it may have been written since this
+    /// store was loaded — by another sven session, or by a sub-agent
+    /// spawned mid-run (see `SpawnAgentTool`) — and saving the stale
+    /// in-memory image would erase those runs.
     pub fn record_run(
         &mut self,
         model: &str,
@@ -203,9 +237,23 @@ impl StatsStore {
         outcome: &RunOutcome,
         duration: Duration,
     ) {
+        self.reload();
         self.stats.add_run(model, host, usage, outcome, duration);
         if let Err(e) = self.save() {
             eprintln!("could not save statistics: {}", e);
+        }
+    }
+
+    /// Replace the in-memory image with the file's current content. A
+    /// missing, unreadable or unparseable file leaves the image
+    /// unchanged — reloading must never lose the run that is about to
+    /// be recorded (unlike `load`, which starts at zero for a fresh
+    /// install, this is a merge step in an ongoing session).
+    fn reload(&mut self) {
+        if let Ok(content) = fs::read_to_string(&self.path) {
+            if let Ok(stats) = serde_json::from_str(&content) {
+                self.stats = stats;
+            }
         }
     }
 
@@ -342,6 +390,9 @@ mod tests {
             rounds: 2,
             tool_calls: 3,
             status,
+            answer: String::new(),
+            answer_truncated: false,
+            error: None,
         }
     }
 

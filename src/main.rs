@@ -9,24 +9,8 @@ use crate::sven::config::SvenConfig;
 use crate::sven::mcp;
 use crate::sven::skills;
 use crate::sven::tool_registry::ToolRegistry;
-use crate::sven::tools::compile_tool::CompileTool;
-use crate::sven::tools::compile_tool::TestTool;
-use crate::sven::tools::edit_tool::{ReplaceFileTool, SearchAndReplaceTool};
-use crate::sven::tools::find_tool::FindTool;
-use crate::sven::tools::git_tools::GitDiffTool;
-use crate::sven::tools::grep_tool::GrepTool;
-use crate::sven::tools::list_files::ListFiles;
-use crate::sven::tools::load_attachment_tool::LoadAttachmentTool;
-use crate::sven::tools::manpage_tool::ManPageTool;
-use crate::sven::tools::notify_tool::NotifySendTool;
-use crate::sven::tools::read_tool::ReadTool;
-use crate::sven::tools::skill_tools::{
-    AddSkillTool, GetSkillTool, ListSkillsTool, RemoveSkillTool, SearchSkillsTool,
-    UpdateSkillTool,
-};
-use crate::sven::tools::time_tool::TimeTool;
-use crate::sven::tools::web_fetch::WebFetch;
-use crate::sven::tools::web_search::WebSearch;
+use crate::sven::tools::builtin_tools;
+use crate::sven::tools::spawn_agent_tool::SpawnAgentTool;
 use sven::agent::{Agent, AgentConfig};
 
 /// Sven is a simple command line ai agent
@@ -63,35 +47,28 @@ struct Args {
 }
 
 async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
-    let mut registry: ToolRegistry = ToolRegistry::new();
-    registry.register(Box::new(TimeTool));
-    registry.register(Box::new(ListFiles));
-    registry.register(Box::new(ReadTool));
-    registry.register(Box::new(WebSearch));
-    registry.register(Box::new(WebFetch));
-    registry.register(Box::new(SearchAndReplaceTool));
-    registry.register(Box::new(ReplaceFileTool));
-    registry.register(Box::new(GrepTool));
-    registry.register(Box::new(FindTool));
-    registry.register(Box::new(ManPageTool));
-    registry.register(Box::new(NotifySendTool));
-    registry.register(Box::new(AddSkillTool));
-    registry.register(Box::new(UpdateSkillTool));
-    registry.register(Box::new(RemoveSkillTool));
-    registry.register(Box::new(ListSkillsTool));
-    registry.register(Box::new(SearchSkillsTool));
-    registry.register(Box::new(GetSkillTool));
-    registry.register(Box::new(CompileTool));
-    registry.register(Box::new(TestTool));
-    registry.register(Box::new(GitDiffTool));
-    registry.register(Box::new(LoadAttachmentTool));
+    let mut registry = ToolRegistry::new();
+    for tool in builtin_tools() {
+        registry.register(tool);
+    }
 
     // MCP servers from the config: connect, list their tools, and
     // register each one like a built-in tool. A server that cannot be
     // reached is reported on stderr and skipped.
-    for tool in mcp::discover(&config.mcp_servers).await {
-        registry.register(Box::new(tool));
+    let mcp_tools = mcp::discover(&config.mcp_servers).await;
+    for tool in &mcp_tools {
+        registry.register(Box::new(tool.clone()));
     }
+
+    // The spawn tool captures the config and the live MCP connections,
+    // so sub-agents reuse the session's server setup. Registered last
+    // so its description is the last thing in the tool list the model
+    // reads.
+    registry.register(Box::new(SpawnAgentTool::new(
+        config.clone(),
+        api_key.clone(),
+        mcp_tools,
+    )));
 
     Agent::new(AgentConfig {
         host: config.host,
@@ -103,6 +80,7 @@ async fn build_agent(config: SvenConfig, api_key: Option<String>) -> Agent {
         data_dir: config.data_dir,
         api_key,
         max_tool_calls: config.max_tool_calls,
+        subagent: false,
     })
 }
 
@@ -186,7 +164,9 @@ async fn main() {
                 "/clear" => agent.clear(),
                 "/stats" => agent.print_stats(),
                 "" => continue,
-                _ => agent.run(&user_prompt).await,
+                _ => {
+                    agent.run(&user_prompt).await;
+                }
             }
         }
         return;
