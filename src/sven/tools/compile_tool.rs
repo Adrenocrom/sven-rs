@@ -10,6 +10,7 @@ use crate::sven::tools::subprocess;
 enum Language {
     Rust,
     UefiRust,
+    WindowsRust,
     Java,
     Dotnet,
     Python
@@ -29,6 +30,13 @@ struct TestToolParams {
 async fn compile_rust() -> Result<String, Box<dyn std::error::Error>> {
     let mut command = Command::new("cargo");
     command.arg("build");
+    Ok(subprocess::run_stderr(&mut command).await?)
+}
+
+async fn compile_windows_rust() -> Result<String, Box<dyn std::error::Error>> {
+    let mut command = Command::new("cargo");
+    command.arg("build");
+    command.arg("--target=x86_64-pc-windows-gnu ");
     Ok(subprocess::run_stderr(&mut command).await?)
 }
 
@@ -86,6 +94,7 @@ tool!(CompileTool, CompileToolParams, "Compile to check for errors.", execute(ar
     match args.language {
         Language::Rust => compile_rust().await,
         Language::UefiRust => compile_uefi_rust().await,
+        Language::WindowsRust => compile_windows_rust().await,
         Language::Java => compile_java().await,
         Language::Dotnet => compile_dotnet().await,
         Language::Python => compile_python().await
