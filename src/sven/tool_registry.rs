@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde_json::{Value, json};
 
@@ -13,6 +14,15 @@ use crate::sven::tool::Tool;
 pub struct ToolRegistry {
     tools: BTreeMap<String, Box<dyn Tool>>,
     definitions: Vec<Value>,
+}
+
+/// `Debug` lists the registered tool names — the boxed tools are not
+/// `Debug`, but the names are what a failed spawn (unknown whitelist
+/// entry) or a test failure needs to show.
+impl fmt::Debug for ToolRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.tools.keys()).finish()
+    }
 }
 
 impl ToolRegistry {

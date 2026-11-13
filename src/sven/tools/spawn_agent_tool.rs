@@ -8,7 +8,10 @@
 //! prompt from the call and the task), gets every built-in tool plus
 //! the session's MCP tools, but not `SpawnAgentTool` itself:
 //! sub-agents cannot spawn agents, so a model cannot run away into
-//! recursive spawning.
+//! recursive spawning. The optional `allowed_tools`/`blocked_tools`
+//! parameters narrow a sub-agent's tool set per spawn — they can only
+//! ever shrink it, since the spawn tool stays excluded whatever the
+//! lists say.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -32,6 +35,16 @@ struct SpawnAgentParams {
     /// sub-agent sees neither this conversation nor any prior context,
     /// so include every detail it needs.
     user_prompt: String,
+    /// Optional whitelist: the exact tool names the sub-agent may use —
+    /// it gets these tools and no others. An empty list leaves it with
+    /// no tools at all (a pure-reasoning agent). Names as the model
+    /// sees them, e.g. "ReadTool" or "mcp__server__tool". Takes
+    /// precedence over blocked_tools when both are given.
+    allowed_tools: Option<Vec<String>>,
+    /// Optional blacklist: the tool names the sub-agent must not get —
+    /// it receives every other tool. Ignored when allowed_tools is
+    /// given.
+    blocked_tools: Option<Vec<String>>,
 }
 
 pub struct SpawnAgentTool {
@@ -55,15 +68,72 @@ impl SpawnAgentTool {
     /// runs, the lock is never contended). `SpawnAgentTool` is
     /// deliberately absent, which is what keeps sub-agents from
     /// spawning further agents.
-    fn sub_registry(&self) -> ToolRegistry {
+    ///
+    /// `allowed`/`blocked` narrow the set per spawn (see
+    /// `SpawnAgentParams`); a listed name no sub-agent could get is an
+    /// error, not a silent drop — a typo in a whitelist would quietly
+    /// strip tools the task depends on, and a typo in a blacklist
+    /// would quietly leave the very tool the caller meant to block.
+    /// The blacklist is not validated when a whitelist is given: it is
+    /// ignored entirely, so its typos cannot fail an otherwise valid
+    /// spawn.
+    fn sub_registry(
+        &self,
+        allowed: Option<&[String]>,
+        blocked: Option<&[String]>,
+    ) -> Result<ToolRegistry, String> {
+        let candidates: Vec<Box<dyn Tool>> = builtin_tools()
+            .into_iter()
+            .chain(
+                self.mcp_tools
+                    .iter()
+                    .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>),
+            )
+            .collect();
+        let names: Vec<String> = candidates.iter().map(|tool| tool.name()).collect();
+        // only the list that takes effect is validated — a blacklist
+        // loses to a whitelist before its names matter
+        let effective = match (allowed, blocked) {
+            (Some(list), _) => Some(("allowed_tools", list)),
+            (None, Some(list)) => Some(("blocked_tools", list)),
+            (None, None) => None,
+        };
+        if let Some((param, list)) = effective {
+            let unknown: Vec<&str> = list
+                .iter()
+                .filter(|name| !names.iter().any(|valid| valid.as_str() == name.as_str()))
+                .map(|name| name.as_str())
+                .collect();
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "{}: unknown tool name(s) for a sub-agent: {}. Valid names: {}. \
+                     (SpawnAgentTool is never available to a sub-agent.)",
+                    param,
+                    unknown.join(", "),
+                    names.join(", ")
+                ));
+            }
+        }
         let mut registry = ToolRegistry::new();
-        for tool in builtin_tools() {
-            registry.register(tool);
+        for tool in candidates {
+            if passes(allowed, blocked, &tool.name()) {
+                registry.register(tool);
+            }
         }
-        for tool in &self.mcp_tools {
-            registry.register(Box::new(tool.clone()));
-        }
-        registry
+        Ok(registry)
+    }
+}
+
+/// Whether `name` passes the whitelist/blacklist. A whitelist wins
+/// over a blacklist (both given → only the whitelist applies); neither
+/// given passes everything.
+fn passes(allowed: Option<&[String]>, blocked: Option<&[String]>, name: &str) -> bool {
+    match allowed {
+        Some(list) => list.iter().any(|entry| entry == name),
+        None => match blocked {
+            Some(list) => !list.iter().any(|entry| entry == name),
+            None => true,
+        },
     }
 }
 
@@ -112,10 +182,13 @@ impl Tool for SpawnAgentTool {
          and a fully self-contained user_prompt — the sub-agent sees \
          nothing of this conversation, so include every detail it needs. \
          It reuses this agent's config (model, host, options) and has the \
-         same tools, except it cannot spawn further agents. Use it to \
-         delegate self-contained subtasks whose back-and-forth would \
-         bloat this context; the sub-agent's work is streamed to the \
-         terminal while it runs."
+         same tools, except it cannot spawn further agents. Optionally \
+         restrict its tools per spawn: allowed_tools is a whitelist (the \
+         sub-agent gets exactly these tools), blocked_tools a blacklist \
+         (it gets every tool except these); a whitelist overrides a \
+         blacklist. Use it to delegate self-contained subtasks whose \
+         back-and-forth would bloat this context; the sub-agent's work is \
+         streamed to the terminal while it runs."
             .to_string()
     }
 
@@ -139,12 +212,16 @@ impl Tool for SpawnAgentTool {
             } else {
                 args.system_prompt
             };
+            let registry = self.sub_registry(
+                args.allowed_tools.as_deref(),
+                args.blocked_tools.as_deref(),
+            )?;
             let mut agent = Agent::new(AgentConfig {
                 host: self.config.host.clone(),
                 model: self.config.model.clone(),
                 system_prompt,
                 options: self.config.options.clone(),
-                tool_registry: self.sub_registry(),
+                tool_registry: registry,
                 backend: self.config.backend.clone(),
                 data_dir: self.config.data_dir.clone(),
                 api_key: self.api_key.clone(),
@@ -192,15 +269,20 @@ mod tests {
         let properties = schema["properties"].as_object().unwrap();
         assert!(properties.contains_key("system_prompt"));
         assert!(properties.contains_key("user_prompt"));
+        // the tool filters are optional — they must not be required
+        assert!(properties.contains_key("allowed_tools"));
+        assert!(properties.contains_key("blocked_tools"));
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("system_prompt")));
         assert!(required.contains(&json!("user_prompt")));
+        assert!(!required.contains(&json!("allowed_tools")));
+        assert!(!required.contains(&json!("blocked_tools")));
     }
 
     #[test]
     fn sub_agents_get_the_builtin_tools_but_cannot_spawn_agents() {
         let tool = tool_with_host("http://localhost:11434", Vec::new());
-        let names = registry_names(&tool.sub_registry());
+        let names = registry_names(&tool.sub_registry(None, None).unwrap());
         // the built-in tools are there …
         assert!(names.contains(&"ReadTool".to_string()));
         assert!(names.contains(&"TimeTool".to_string()));
@@ -226,8 +308,115 @@ mod tests {
         };
         let mcp_tool = McpTool::new("srv", &info, Arc::new(tokio::sync::Mutex::new(client)));
         let tool = tool_with_host("http://localhost:11434", vec![mcp_tool]);
-        let names = registry_names(&tool.sub_registry());
+        let names = registry_names(&tool.sub_registry(None, None).unwrap());
         assert!(names.contains(&"mcp__srv__echo".to_string()), "{:?}", names);
+    }
+
+    #[test]
+    fn a_whitelist_restricts_the_sub_agent_to_exactly_those_tools() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let names = registry_names(
+            &tool.sub_registry(
+                Some(&["ReadTool".to_string(), "TimeTool".to_string()]),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(names, vec!["ReadTool".to_string(), "TimeTool".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_whitelist_leaves_the_sub_agent_with_no_tools() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let registry = tool.sub_registry(Some(&[]), None).unwrap();
+        assert!(registry.tool_definitions().is_empty());
+    }
+
+    #[test]
+    fn a_blacklist_removes_only_the_listed_tools() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let names = registry_names(
+            &tool.sub_registry(
+                None,
+                Some(&["ReadTool".to_string(), "WebFetch".to_string()]),
+            )
+            .unwrap(),
+        );
+        assert!(!names.contains(&"ReadTool".to_string()), "{:?}", names);
+        assert!(!names.contains(&"WebFetch".to_string()), "{:?}", names);
+        // everything else survives
+        assert!(names.contains(&"TimeTool".to_string()), "{:?}", names);
+        assert!(names.contains(&"GrepTool".to_string()), "{:?}", names);
+    }
+
+    #[test]
+    fn a_whitelist_wins_over_a_blacklist() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        // the blacklist names a tool the whitelist keeps — the
+        // whitelist decides, and the ignored blacklist is not validated
+        let names = registry_names(
+            &tool.sub_registry(
+                Some(&["ReadTool".to_string()]),
+                Some(&["TimeTool".to_string(), "NoSuchTool".to_string()]),
+            )
+            .unwrap(),
+        );
+        assert_eq!(names, vec!["ReadTool".to_string()]);
+    }
+
+    #[test]
+    fn unknown_whitelist_names_are_rejected_with_the_valid_ones() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let error = tool
+            .sub_registry(Some(&["ReadTool".to_string(), "ReedTool".to_string()]), None)
+            .unwrap_err();
+        assert!(error.contains("allowed_tools"), "{}", error);
+        assert!(error.contains("ReedTool"), "{}", error);
+        assert!(error.contains("Valid names"), "{}", error);
+        assert!(error.contains("ReadTool"), "{}", error);
+    }
+
+    #[test]
+    fn unknown_blacklist_names_are_rejected_too() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let error = tool
+            .sub_registry(None, Some(&["Nope".to_string()]))
+            .unwrap_err();
+        assert!(error.contains("blocked_tools"), "{}", error);
+        assert!(error.contains("Nope"), "{}", error);
+    }
+
+    #[test]
+    fn the_spawn_tool_cannot_be_whitelisted_into_a_sub_agent() {
+        let tool = tool_with_host("http://localhost:11434", Vec::new());
+        let error = tool
+            .sub_registry(Some(&["SpawnAgentTool".to_string()]), None)
+            .unwrap_err();
+        // the recursion guard is not overridable — the spawn tool is
+        // simply not a name a sub-agent could ever get
+        assert!(error.contains("SpawnAgentTool"), "{}", error);
+        assert!(error.contains("never available"), "{}", error);
+    }
+
+    #[test]
+    fn whitelists_can_select_mcp_tools_by_their_full_name() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let client = McpClient::with_transport(
+            "srv",
+            Box::new(MockTransport { state: Arc::clone(&state) }),
+        );
+        let info = McpToolInfo {
+            name: "echo".to_string(),
+            description: "Echo a text".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+        };
+        let mcp_tool = McpTool::new("srv", &info, Arc::new(tokio::sync::Mutex::new(client)));
+        let tool = tool_with_host("http://localhost:11434", vec![mcp_tool]);
+        let names = registry_names(
+            &tool.sub_registry(Some(&["mcp__srv__echo".to_string()]), None)
+                .unwrap(),
+        );
+        assert_eq!(names, vec!["mcp__srv__echo".to_string()]);
     }
 
     #[test]
@@ -433,5 +622,52 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("must not be empty"), "{}", error);
+    }
+
+    #[tokio::test]
+    async fn a_whitelist_reaches_the_sub_agents_chat_request() {
+        let (host, captured) = fake_ollama(
+            r#"{"message":{"content":"ok"},"done":true,"prompt_eval_count":1,"eval_count":1}"#,
+        );
+        let tool = tool_with_host(&host, Vec::new());
+        tool.execute(json!({
+            "system_prompt": "s",
+            "user_prompt": "task",
+            "allowed_tools": ["TimeTool"]
+        }))
+        .await
+        .unwrap();
+        let request = captured.lock().unwrap().clone().unwrap();
+        // the sub-agent's request advertises exactly the whitelisted
+        // tool — the restriction is enforced in the registry, not just
+        // validated
+        let body: Value = serde_json::from_str(&request).unwrap();
+        let tools: Vec<String> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(tools, vec!["TimeTool".to_string()], "{}", request);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_whitelist_name_fails_the_spawn_before_any_request() {
+        let (host, captured) = fake_ollama(
+            r#"{"message":{"content":"ok"},"done":true,"prompt_eval_count":1,"eval_count":1}"#,
+        );
+        let tool = tool_with_host(&host, Vec::new());
+        let error = tool
+            .execute(json!({
+                "system_prompt": "s",
+                "user_prompt": "task",
+                "allowed_tools": ["ReedTool"]
+            }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ReedTool"), "{}", error);
+        // nothing was sent — the spawn failed at validation time
+        assert!(captured.lock().unwrap().is_none());
     }
 }

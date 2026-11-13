@@ -346,6 +346,21 @@ work is streamed to the terminal while it runs, its run is recorded in
 `statistics.json` like any other, and it does not send its own
 run-finished notification — the parent's covers the whole run.
 
+The tool set can be narrowed per spawn with two optional parameters:
+
+- `allowed_tools` — a whitelist: the sub-agent gets exactly these tools
+  (an empty list means a pure-reasoning agent with no tools at all).
+- `blocked_tools` — a blacklist: the sub-agent gets every tool except
+  these. Ignored when `allowed_tools` is given.
+
+Names are the ones the model sees, e.g. `ReadTool` or
+`mcp__server__tool`. An unknown name fails the spawn with an error
+listing the valid ones — a typo in a whitelist would otherwise silently
+strip tools the task depends on, and a typo in a blacklist would
+silently leave the very tool the caller meant to block. The lists can
+only ever shrink the tool set: `SpawnAgentTool` is not a valid name for
+a sub-agent, so the recursion guard cannot be lifted from the prompt.
+
 ## Skills
 
 sven-rs has a persistent knowledge store: skills are markdown files under
@@ -388,7 +403,10 @@ path-confinement check used by the file tools.
   get, so delegation is exactly one level deep — a model cannot spawn
   agents recursively. A sub-agent otherwise has the parent's tool set
   (including the file tools, with the same path confinement) and runs
-  against the same server.
+  against the same server. The optional `allowed_tools`/`blocked_tools`
+  parameters can only shrink that set — `SpawnAgentTool` is not a
+  valid name in either list, so the recursion guard cannot be lifted
+  from the prompt.
 
 ## Architecture
 
