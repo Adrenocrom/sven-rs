@@ -15,7 +15,8 @@ pub struct ChatOptions {
     pub temperature: f32,
     pub num_ctx: Option<i32>,
     pub max_tokens: Option<i32>,
-    pub num_predict: Option<i32>
+    pub num_predict: Option<i32>,
+    pub draft_num_predict: Option<i32>
 }
 
 impl Default for ChatOptions {
@@ -25,7 +26,8 @@ impl Default for ChatOptions {
             temperature: 0.1,
             num_ctx: Some(num_ctx),
             max_tokens: None,
-            num_predict: None
+            num_predict: None,
+            draft_num_predict: None,
         }
     }
 }
