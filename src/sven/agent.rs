@@ -247,8 +247,14 @@ impl Agent {
         let mut usage = TokenUsage::default();
         let outcome = self.run_rounds(&prompt, &attachments, &mut usage).await;
         let elapsed = start.elapsed();
+        let summary_prefix = if self.config.subagent {
+            "sub-agent"
+        } else {
+            "run"
+        };
         let summary = format!(
-            "run finished in {} — in {} out {} tokens ({} total)",
+            "{} finished in {} — in {} out {} tokens ({} total)",
+            summary_prefix,
             format_duration(elapsed),
             format_tokens(usage.prompt_tokens),
             format_tokens(usage.completion_tokens),
@@ -262,9 +268,7 @@ impl Agent {
             &outcome,
             elapsed,
         );
-        if !self.config.subagent {
-            self.notify_finished(elapsed, &summary).await;
-        }
+        self.notify_finished(elapsed, &summary).await;
         outcome
     }
 
