@@ -184,10 +184,17 @@ async fn main() {
         match readline {
             Ok(line) => {
                 let line = line.trim();
-                let _ = rl.add_history_entry(line);
+
                 if "/close".eq(line) {
                     break;
-                } else if "/clear".eq(line) {
+                }
+
+                let _ = rl.add_history_entry(line);
+                if let Err(e) = rl.save_history(&history_path) {
+                    eprintln!("could not save history: {}", e);
+                }
+
+                if "/clear".eq(line) {
                     agent.clear();
                 } else if "/stats".eq(line) {
                     agent.print_stats();
@@ -205,9 +212,5 @@ async fn main() {
                 break;
             }
         }
-    }
-
-    if let Err(e) = rl.save_history(&history_path) {
-        eprintln!("could not save history: {}", e);
     }
 }
