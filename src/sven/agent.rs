@@ -546,12 +546,7 @@ impl Agent {
         };
         let (attachments, dropped) =
             filter_supported(&self.config.backend, result.attachments);
-        let mut text = result.text;
-        // this is a very brief fix, its needs to be handled by toolstruct
-        let names = ["ReplaceFileTool", "SearchAndReplaceTool"];
-        if !names.contains(&tool_name) {
-            text = truncate(&text, MAX_TOOL_OUTPUT);
-        }
+        let mut text = truncate(&result.text, MAX_TOOL_OUTPUT);
         for note in dropped {
             text.push_str(&format!("\n[{note}]"));
         }
